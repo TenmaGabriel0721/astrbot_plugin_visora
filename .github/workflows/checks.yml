@@ -1,0 +1,31 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: astrbot_plugin_visora
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: astrbot_plugin_visora
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            astrbot_plugin_visora/requirements.txt
+            astrbot_plugin_visora/requirements-dev.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m pytest -q

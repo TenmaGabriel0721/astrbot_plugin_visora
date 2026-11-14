@@ -1,0 +1,638 @@
+{
+  "timing": {
+    "description": "时序与频率",
+    "hint": "生成超时、轮询、并发、频率限制和重试相关配置",
+    "type": "object",
+    "items": {
+      "timeout": {
+        "description": "单次生图请求超时（秒）",
+        "hint": "每次向供应商请求图片的等待上限；整个任务另受生图总时限约束",
+        "type": "int",
+        "default": 300
+      },
+      "video_timeout": {
+        "description": "视频生成超时时间（秒）",
+        "hint": "提交、轮询和下载视频的总等待时间",
+        "type": "int",
+        "default": 600
+      },
+      "video_poll_interval": {
+        "description": "视频任务轮询间隔（秒）",
+        "hint": "异步视频任务的查询间隔",
+        "type": "int",
+        "default": 5
+      },
+      "max_concurrent_generations": {
+        "description": "最大并发生成数",
+        "hint": "同时生成图片的最大数量,防止资源耗尽",
+        "type": "int",
+        "default": 3
+      },
+      "max_queued_generations": {
+        "description": "后台生图最大排队数",
+        "hint": "LLM 生图与人格写真后台队列最多保留的等待任务数；队列已满时会立即拒绝且不扣除资源",
+        "type": "int",
+        "default": 16
+      },
+      "background_send_timeout": {
+        "description": "后台结果发送超时（秒）",
+        "hint": "后台图片主动发送超过此时间后记为未知状态，不会自动重发，以免重复发送",
+        "type": "int",
+        "default": 60
+      },
+      "max_requests_per_minute": {
+        "description": "每分钟最大请求数",
+        "hint": "单个用户每分钟最多可以发起的图片生成请求数",
+        "type": "int",
+        "default": 3
+      },
+      "max_retry_attempts": {
+        "description": "生图失败重试次数",
+        "hint": "当图片生成失败时,自动重试的最大次数(默认3次)",
+        "type": "int",
+        "default": 3
+      },
+      "task_timeout": {
+        "description": "生图总时限（秒）",
+        "hint": "包含各模型重试、自动回退和图片下载的总时间，范围 30–3600 秒",
+        "type": "int",
+        "default": 600
+      }
+    }
+  },
+  "leave_reply": {
+    "description": "回复展示",
+    "hint": "生成中提示、统计信息和结果附加说明显示设置",
+    "type": "object",
+    "items": {
+      "show_generating_notice": {
+        "description": "显示生成中的先行提示",
+        "hint": "开始生图时先发送一条“正在生成”提示，出图后会自动撤回",
+        "type": "bool",
+        "default": true
+      },
+      "show_generation_stats": {
+        "description": "显示生成统计信息",
+        "hint": "是否在图片下方显示耗时、资源等统计信息",
+        "type": "bool",
+        "default": true
+      },
+      "show_elapsed_time": {
+        "description": "显示生成耗时",
+        "hint": "是否显示生成图片所花费的时间",
+        "type": "bool",
+        "default": true
+      },
+      "show_remaining_points": {
+        "description": "显示剩余资源",
+        "hint": "是否显示用户的剩余资源（需开启经济系统）",
+        "type": "bool",
+        "default": true
+      },
+      "show_preset_info": {
+        "description": "显示预设使用提示",
+        "hint": "是否在生成结果下方显示使用了哪个预设，此开关独立于耗时和资源统计",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "wake_interaction": {
+    "description": "唤醒与交互",
+    "hint": "LLM 工具、命令别名、预设和快捷触发相关配置",
+    "type": "object",
+    "items": {
+      "enable_llm_tool": {
+        "description": "启用 LLM 工具",
+        "hint": "启用后,LLM 可以在对话中自动调用图像生成功能",
+        "type": "bool",
+        "default": true
+      },
+      "command_alias": {
+        "description": "生图命令别名",
+        "hint": "生图指令的别名，多个别名用逗号分隔",
+        "type": "list",
+        "default": [
+          "生图"
+        ]
+      },
+      "video_command_alias": {
+        "description": "生视频命令别名",
+        "hint": "视频生成指令的别名，多个别名用逗号分隔",
+        "type": "list",
+        "default": [
+          "生视频"
+        ]
+      },
+      "require_prefix": {
+        "description": "预设指令需要前缀",
+        "hint": "启用后，预设快捷指令必须使用前缀（如 ～手办化 或 ~手办化）才能触发",
+        "type": "bool",
+        "default": false
+      },
+      "presets": {
+        "description": "预设提示词",
+        "hint": "预定义的图片生成提示词模板，格式为 '名称:提示词'，每行一个预设。添加后可直接发送 ～预设名称（或 ~预设名称），并可在名称后追加要求",
+        "type": "list",
+        "default": [
+          "手办化:Your task is to create a photorealistic, masterpiece-quality image of a 1/7 scale commercialized figurine based on the user's character. The final image must be in a realistic style and environment.\n\n**Crucial Instruction on Face & Likeness:** The figurine's face is the most critical element. It must be a perfect, high-fidelity 3D translation of the character from the source image. The sculpt must be sharp, clean, and intricately detailed, accurately capturing the original artwork's facial structure, eye style, expression, and hair. The final result must be immediately recognizable as the same character, elevated to a premium physical product standard. Do NOT generate a generic or abstract face.\n\n**Scene Composition (Strictly follow these details):**\n1. **Figurine & Base:** Place the figure on a computer desk. It must stand on a simple, circular, transparent acrylic base WITHOUT any text or markings.\n2. **Computer Monitor:** In the background, a computer monitor must display 3D modeling software (like ZBrush or Blender) with the digital sculpt of the very same figurine visible on the screen.\n3. **Artwork Display:** Next to the computer screen, include a transparent acrylic board with a wooden base. This board holds a print of the original 2D artwork that the figurine is based on.\n4. **Environment:** The overall setting is a desk, with elements like a keyboard to enhance realism. The lighting should be natural and well-lit, as if in a room.",
+          "绘画四宫格:Step 1: line drawing. Step 2: tile colors. Step 3: Add Shadows. Step 4: Refine and shape. No words",
+          "发型九宫格:A professional hairstyle showcase based on the input image of a person's upper body and face, displaying the character with nine distinct hairstyles arranged in a clean, grid-like layout (3x3 grid) on a single image. Each hairstyle replaces the original hair while preserving the person's facial features, skin tone, and clothing details from the input image. The hairstyles include a variety of styles: short pixie cut, long wavy hair, sleek bob, voluminous curls, high ponytail, messy bun, side-swept bangs, braided updo, and straight layered cut, each rendered with realistic textures and natural lighting. The background is a consistent, neutral color (pure white or light gray) to emphasize the hairstyles and maintain a polished, professional look suitable for hairstyle selection. Subtle labels beneath each hairstyle indicate the style name for clarity.",
+          "头像九宫格:Id photos of the person in the picture with 9 different hairstyles, showing close-ups of the person with each hairstyle (Japanese, Korean, n) , keeping the features and clothes, and integration of the output for a nine grid picture",
+          "表情九宫格:Transform the input person image (half-body portrait) into a 3x3 grid of nine distinct images, each showcasing a different facial expression with the corresponding text label below the face, while retaining the original character's facial features, hairstyle, and clothing details. Arrange the expressions as follows: top row (happy with raised corners and squinted eyes labeled 'Happy', sad with downturned mouth and raised inner brows labeled 'Sad', angry with furrowed brows and narrowed eyes labeled 'Angry'); middle row (surprised with wide eyes and open mouth labeled 'Surprised', fearful with wide eyes and tense brows labeled 'Fearful', disgusted with wrinkled nose and pursed lips labeled 'Disgusted'); bottom row (confused with uneven brows and asymmetrical mouth labeled 'Confused', proud with lifted chin and firm gaze labeled 'Proud', embarrassed with tense smile and downward gaze labeled 'Embarrassed'). Ensure each cell reflects the described expression naturally, with seamless completion of the lower body to match the original clothing style. Use a soft, unified background (e.g., light gray) and consistent lighting across all grids to maintain coherence and focus on the expressions.",
+          "手办化2:Use the nano-banana model to create a 1/7 scale commercialized figure of thecharacter in the illustration, in a realistic styie and environment.Place the figure on a computer desk, using a circular transparent acrylic basewithout any text.On the computer screen, display the ZBrush modeling process of the figure.Next to the computer screen, place a BANDAl-style toy packaging box printedwith the original artwork.",
+          "表情包:{\"prompt\": \"为我生成图中角色的绘制 Q 版的,LINE 风格的半身像表情包,注意头饰要正确\n彩色手绘风格,使用 4x6 布局,涵盖各种各样的常用聊天语句,或是一些有关的娱乐 meme\n其他需求:不要原图复制。所有标注为手写简体中文。\", \"aspect_ratio\": \"16:9\", \"resolution\": \"2K\"}"
+        ]
+      }
+    }
+  },
+  "access_control": {
+    "description": "访问与安全控制",
+    "hint": "上传参考图、结果视频大小和头像引用数量限制",
+    "type": "object",
+    "items": {
+      "max_image_size_mb": {
+        "description": "最大图片大小(MB)",
+        "hint": "用户上传的参考图片最大允许大小",
+        "type": "int",
+        "default": 10
+      },
+      "max_video_size_mb": {
+        "description": "最大视频大小(MB)",
+        "hint": "生成结果视频下载到本地时允许的最大大小",
+        "type": "int",
+        "default": 100
+      },
+      "max_avatar_refs_per_request": {
+        "description": "单次头像参考数量上限",
+        "hint": "一次头像生图最多允许引用的用户头像数量，实际范围会限制在 1-10",
+        "type": "int",
+        "default": 4
+      },
+      "max_reference_images_per_request": {
+        "description": "单次参考图总数上限",
+        "hint": "消息图片、引用图片和头像参考最终传给模型的总数量上限，实际范围会限制在 1-10",
+        "type": "int",
+        "default": 4
+      }
+    }
+  },
+  "personality": {
+    "description": "模型与人格",
+    "hint": "图片模型路由、视频模型和安全策略配置",
+    "type": "object",
+    "items": {
+      "image_model_routes": {
+        "description": "生图模型路由",
+        "hint": "推荐在“映境 Visora 管理 → 模型顺序”选择供应商并用上移/下移调整顺序。保存后自动更新优先级；这里保留高级配置入口。",
+        "type": "template_list",
+        "default": [],
+        "templates": {
+          "txt2img": {
+            "name": "文生图模型路由",
+            "hint": "用于没有参考图的文生图；同类型第一项是主模型，后续项是回退模型；所有项按 priority 升序尝试",
+            "display_item": "provider_id",
+            "hide_hint_in_list": true,
+            "items": {
+              "provider_id": {
+                "description": "文生图模型",
+                "hint": "从已配置的 AstrBot 模型中选择；也可使用 映境 Visora 管理页的供应商下拉列表",
+                "type": "string",
+                "default": "",
+                "_special": "select_provider"
+              },
+              "request_format": {
+                "description": "请求格式（手动填写）",
+                "hint": "常用格式（可直接复制）：\ngemini = v1beta/models/{model}:generateContent\nopenai_chat = v1/chat/completions\nopenai_images = v1/images/generations\n该模型只使用这里填写的一种格式，不会轮询其他格式",
+                "type": "string",
+                "default": "gemini"
+              },
+              "enabled": {
+                "description": "启用该路由",
+                "type": "boolean",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级：数值越小越优先；相同数值保持配置顺序",
+                "type": "integer",
+                "default": 0,
+                "hint": "数值越小越优先；管理页会按列表顺序自动填写，无需手动交换数字"
+              }
+            }
+          },
+          "img2img": {
+            "name": "图生图模型路由",
+            "hint": "用于带参考图的图生图；同类型第一项是主模型，后续项是回退模型；所有项按 priority 升序尝试",
+            "display_item": "provider_id",
+            "hide_hint_in_list": true,
+            "items": {
+              "provider_id": {
+                "description": "图生图模型",
+                "hint": "从已配置的 AstrBot 模型中选择；也可使用 映境 Visora 管理页的供应商下拉列表",
+                "type": "string",
+                "default": "",
+                "_special": "select_provider"
+              },
+              "request_format": {
+                "description": "请求格式（手动填写）",
+                "hint": "常用格式（可直接复制）：\ngemini = v1beta/models/{model}:generateContent\nopenai_chat = v1/chat/completions\nopenai_edits = v1/images/edits\n该模型只使用这里填写的一种格式，不会轮询其他格式",
+                "type": "string",
+                "default": "gemini"
+              },
+              "enabled": {
+                "description": "启用该路由",
+                "type": "boolean",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级：数值越小越优先；相同数值保持配置顺序",
+                "type": "integer",
+                "default": 0,
+                "hint": "数值越小越优先；管理页会按列表顺序自动填写，无需手动交换数字"
+              }
+            }
+          },
+          "persona": {
+            "name": "自拍生图模型路由",
+            "hint": "用于自拍人格参考图生图；同类型第一项是主模型，后续项是回退模型；所有项按 priority 升序尝试",
+            "display_item": "provider_id",
+            "hide_hint_in_list": true,
+            "items": {
+              "provider_id": {
+                "description": "自拍生图模型",
+                "hint": "从已配置的 AstrBot 模型中选择；也可使用 映境 Visora 管理页的供应商下拉列表",
+                "type": "string",
+                "default": "",
+                "_special": "select_provider"
+              },
+              "request_format": {
+                "description": "请求格式（手动填写）",
+                "hint": "常用格式（可直接复制）：\ngemini = v1beta/models/{model}:generateContent\nopenai_chat = v1/chat/completions\nopenai_edits = v1/images/edits\n该模型只使用这里填写的一种格式，不会轮询其他格式",
+                "type": "string",
+                "default": "gemini"
+              },
+              "enabled": {
+                "description": "启用该路由",
+                "type": "boolean",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级：数值越小越优先；相同数值保持配置顺序",
+                "type": "integer",
+                "default": 0,
+                "hint": "数值越小越优先；管理页会按列表顺序自动填写，无需手动交换数字"
+              }
+            }
+          },
+          "admin": {
+            "name": "管理员自用生图模型路由",
+            "hint": "仅“管理员生图”指令使用（需管理员）；同类型第一项是主模型，后续项是回退模型；沿用全局安全过滤设置，不影响文/图/自拍生图",
+            "display_item": "provider_id",
+            "hide_hint_in_list": true,
+            "items": {
+              "provider_id": {
+                "description": "管理员自用生图模型",
+                "hint": "从已配置的 AstrBot 模型中选择；也可使用 映境 Visora 管理页的供应商下拉列表",
+                "type": "string",
+                "default": "",
+                "_special": "select_provider"
+              },
+              "request_format": {
+                "description": "请求格式（手动填写）",
+                "hint": "常用格式（可直接复制）：\ngemini = v1beta/models/{model}:generateContent\nopenai_chat = v1/chat/completions\nopenai_images = v1/images/generations\nopenai_edits = v1/images/edits\n该模型只使用这里填写的一种格式，不会轮询其他格式",
+                "type": "string",
+                "default": "gemini"
+              },
+              "enabled": {
+                "description": "启用该路由",
+                "type": "boolean",
+                "default": true
+              },
+              "priority": {
+                "description": "优先级：数值越小越优先；相同数值保持配置顺序",
+                "type": "integer",
+                "default": 0,
+                "hint": "数值越小越优先；管理页会按列表顺序自动填写，无需手动交换数字"
+              }
+            }
+          }
+        }
+      },
+      "video_provider_id": {
+        "description": "视频生成模型",
+        "hint": "选择视频生成模型提供商，走与生图相同的系统 Provider / NewAPI 中转站配置；model 从所选 Provider 读取",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider"
+      },
+      "safety_settings": {
+        "description": "安全过滤级别",
+        "hint": "控制内容安全过滤的强度",
+        "type": "string",
+        "default": "BLOCK_MEDIUM_AND_ABOVE",
+        "options": [
+          "BLOCK_NONE",
+          "BLOCK_ONLY_HIGH",
+          "BLOCK_MEDIUM_AND_ABOVE",
+          "BLOCK_LOW_AND_ABOVE"
+        ]
+      }
+    }
+  },
+  "context_compression": {
+    "description": "视频接口路径与任务上下文",
+    "hint": "视频提交请求路径和任务查询路径等中转站配置",
+    "type": "object",
+    "items": {
+      "video_api_request_formats": {
+        "description": "视频 API 请求路径列表",
+        "hint": "每行一个请求路径/别名，会按顺序尝试。默认 v1/videos/generations；Agnes Video v2.0 建议填写 agnes_videos（等价于 v1/videos）；如 NewAPI 使用其他路径，请按中转站实际填写",
+        "type": "list",
+        "default": [
+          "v1/videos/generations"
+        ]
+      },
+      "video_task_query_format": {
+        "description": "视频任务查询路径模板",
+        "hint": "异步任务需要轮询且响应未给 status_url 时使用，例如 v1/videos/generations/{task_id}；留空则只使用响应里的 status_url",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "comfort": {
+    "description": "经济系统",
+    "hint": "资源名称、消耗、签到和初始资源配置",
+    "type": "object",
+    "items": {
+      "enable_economy": {
+        "description": "启用经济系统",
+        "hint": "开启后，生图将消耗可配置资源，支持签到获取资源",
+        "type": "bool",
+        "default": false
+      },
+      "points_name": {
+        "description": "经济系统名词",
+        "hint": "用于显示原“积分”的自定义名称，例如：积分、点数、金币、灵感值",
+        "type": "string",
+        "default": "积分"
+      },
+      "cost_per_image": {
+        "description": "单次生图消耗",
+        "hint": "每次生成图片消耗的资源数量",
+        "type": "int",
+        "default": 10
+      },
+      "cost_per_video": {
+        "description": "单次生视频消耗",
+        "hint": "每次生成视频消耗的资源数量",
+        "type": "int",
+        "default": 30
+      },
+      "checkin_points_min": {
+        "description": "签到最少资源",
+        "hint": "每日签到获得的最小资源数",
+        "type": "int",
+        "default": 10
+      },
+      "checkin_points_max": {
+        "description": "签到最多资源",
+        "hint": "每日签到获得的最大资源数",
+        "type": "int",
+        "default": 50
+      },
+      "initial_points": {
+        "description": "新用户初始资源",
+        "hint": "新用户首次使用时赠送的资源",
+        "type": "int",
+        "default": 100
+      }
+    }
+  },
+  "tool_decoration": {
+    "description": "生成参数",
+    "hint": "图片/自拍/视频默认生成参数和视频开关",
+    "type": "object",
+    "items": {
+      "default_aspect_ratio": {
+        "description": "默认宽高比",
+        "hint": "使用命令生图时默认使用的图片宽高比",
+        "type": "string",
+        "default": "1:1",
+        "options": [
+          "1:1",
+          "2:3",
+          "3:2",
+          "3:4",
+          "4:3",
+          "4:5",
+          "5:4",
+          "9:16",
+          "16:9",
+          "21:9",
+          "auto"
+        ]
+      },
+      "default_resolution": {
+        "description": "默认分辨率",
+        "hint": "生图工具未明确指定分辨率时使用。自定义宽高优先于默认宽高比；是否支持由所选模型和中转站决定",
+        "type": "string",
+        "default": "2K",
+        "options": [
+          "1K",
+          "2K",
+          "4K",
+          "自定义"
+        ]
+      },
+      "custom_resolution": {
+        "description": "自定义分辨率",
+        "hint": "仅在默认分辨率选择“自定义”时生效，请填写 WIDTHxHEIGHT，例如 1920x1080",
+        "type": "string",
+        "default": "1920x1080",
+        "condition": {
+          "default_resolution": "自定义"
+        }
+      },
+      "persona_photo_default_resolution": {
+        "description": "珈百璃自拍工具默认分辨率",
+        "hint": "用于 visora_persona_photo 的默认分辨率，可选 1K / 2K / 4K",
+        "type": "string",
+        "default": "2K"
+      },
+      "enable_video_generation": {
+        "description": "启用视频生成",
+        "hint": "启用后可使用生视频/文生视频命令和 LLM 视频工具",
+        "type": "bool",
+        "default": true
+      },
+      "default_video_duration": {
+        "description": "默认视频时长（秒）",
+        "hint": "使用生视频命令时默认传给中转站的视频时长",
+        "type": "int",
+        "default": 5
+      },
+      "default_video_ratio": {
+        "description": "默认视频比例",
+        "hint": "使用生视频命令时默认使用的视频宽高比",
+        "type": "string",
+        "default": "16:9",
+        "options": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4",
+          "auto",
+          "adaptive"
+        ]
+      },
+      "default_video_resolution": {
+        "description": "默认视频分辨率",
+        "hint": "使用生视频命令时默认传给中转站的视频分辨率",
+        "type": "string",
+        "default": "720p",
+        "options": [
+          "480p",
+          "720p",
+          "1080p"
+        ]
+      },
+      "video_duration_field": {
+        "description": "视频时长字段策略",
+        "hint": "选择向中转站传递视频时长的字段。all 会同时传 duration/duration_seconds/seconds；如中转站严格校验，可改为 seconds。Agnes 模式会改用 num_frames/frame_rate。",
+        "type": "string",
+        "default": "all",
+        "options": [
+          "all",
+          "duration",
+          "duration_seconds",
+          "seconds"
+        ]
+      },
+      "video_payload_mode": {
+        "description": "视频请求参数模式",
+        "hint": "auto 会按模型和路径自动判断；Agnes Video v2.0 建议选择 agnes，并将视频 API 请求路径设为 agnes_videos。flat 为旧版通用中转站格式。",
+        "type": "string",
+        "default": "auto",
+        "options": [
+          "auto",
+          "flat",
+          "agnes",
+          "openai_videos",
+          "openai_chat"
+        ]
+      },
+      "video_public_base_url": {
+        "description": "图生视频参考图公网直链 Base URL",
+        "hint": "Agnes 等外部视频 API 需要公网可访问的图片直链，QQ 图床经常被拦、本地图没有外网地址。填写本机 AstrBot 面板的公网地址（如 https://astr.example.com），插件会把参考图转存为面板上的临时直链。留空时回退使用核心配置 callback_api_base。",
+        "type": "string",
+        "default": ""
+      },
+      "video_frame_rate": {
+        "description": "视频帧率",
+        "hint": "Agnes 模式使用 num_frames/frame_rate 控制时长，默认 24。",
+        "type": "int",
+        "default": 24
+      },
+      "video_extra_payload": {
+        "description": "视频额外请求参数",
+        "hint": "高级配置：填写 JSON 对象，合并到视频请求体中。可用于 Agnes 的 negative_prompt、seed、num_inference_steps、extra_body 等专有参数。",
+        "type": "string",
+        "default": "{}"
+      },
+      "video_query_model_name": {
+        "description": "Agnes 查询附带模型名",
+        "hint": "Agnes video_id 查询时是否追加 model_name 参数，默认开启。",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "debug": {
+    "description": "调试与网络",
+    "hint": "网络代理等调试配置",
+    "type": "object",
+    "items": {
+      "proxy": {
+        "description": "代理地址",
+        "hint": "例如: http://127.0.0.1:7890",
+        "type": "string",
+        "default": ""
+      },
+      "video_max_unknown_polls": {
+        "description": "视频 unknown 状态最大轮询次数",
+        "hint": "连续收到 unknown/空状态超过该次数后停止轮询并提示查询路径可能不正确",
+        "type": "int",
+        "default": 6
+      }
+    }
+  },
+  "persona": {
+    "description": "各 Bot 自拍",
+    "hint": "推荐使用 映境 Visora 管理页配置每个 Bot 的身份和参考图，Bot ID 是消息平台实例 ID",
+    "type": "object",
+    "items": {
+      "persona_profiles": {
+        "description": "Bot 独立自拍资料",
+        "hint": "同一个 Bot 只能绑定一套。未绑定或没有参考图时不会生成自拍。参考图保存在插件数据目录中。",
+        "type": "template_list",
+        "default": [],
+        "templates": {
+          "profile": {
+            "name": "自拍资料",
+            "display_item": "name",
+            "items": {
+              "id": {
+                "description": "资料 ID",
+                "hint": "管理页自动生成，已有参考图的资料请勿改动此 ID",
+                "type": "string",
+                "default": ""
+              },
+              "name": {
+                "description": "资料名称",
+                "type": "string",
+                "default": "自拍资料"
+              },
+              "bot_id": {
+                "description": "绑定 Bot ID",
+                "hint": "消息平台配置中的实例 ID，留空表示暂不绑定",
+                "type": "string",
+                "default": ""
+              },
+              "identity_prompt": {
+                "description": "人物身份补充",
+                "hint": "发色、瞳色、脸型等，以这套资料的参考图为准",
+                "type": "text",
+                "default": ""
+              },
+              "style": {
+                "description": "默认画风",
+                "type": "string",
+                "default": "photo",
+                "options": [
+                  "photo",
+                  "anime",
+                  "follow"
+                ],
+                "hint": "photo=真人摄影，anime=动漫插画，follow=跟随本次要求"
+              },
+              "resolution": {
+                "description": "默认分辨率",
+                "type": "string",
+                "default": "inherit",
+                "options": [
+                  "inherit",
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "hint": "inherit=继承插件自拍默认值；用户明确要求的分辨率优先"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

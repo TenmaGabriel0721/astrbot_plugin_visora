@@ -1,0 +1,14 @@
+Visora / 映境
+Independently maintained by TenmaGabriel0721.
+https://github.com/TenmaGabriel0721/astrbot_plugin_visora
+
+Portions of the early image generation implementation are derived from:
+Railgun19457/astrbot_plugin_gemini_image
+https://github.com/Railgun19457/astrbot_plugin_gemini_image
+
+The upstream GNU Affero General Public License, version 3, is preserved in
+LICENSE. Visora retains that license for the derivative work.
+
+Visora 1.0.0 (2026-11-15) establishes independent branding and maintenance,
+with multi-provider routing, a visual settings page, Bot-specific persona
+profiles, persistent background tasks, and image/video generation support.

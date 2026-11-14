@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>映境 Visora 管理</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-icon" src="./logo.svg" width="48" height="48" alt="" />
+          <div>
+            <h1>映境 Visora 管理</h1>
+            <p>调整模型尝试顺序，为每个 Bot 配置自己的自拍。</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="refresh" type="button">刷新供应商</button>
+          <button id="reload" type="button">重新加载</button>
+          <button id="save" class="primary" type="button" disabled>保存设置</button>
+        </div>
+      </header>
+      <div id="status" class="status" role="status" aria-live="polite">正在读取设置…</div>
+      <nav class="tabs" role="tablist" aria-label="配置类型">
+        <button id="models-tab" class="active" role="tab" aria-selected="true" aria-controls="models" type="button">模型顺序</button>
+        <button id="personas-tab" role="tab" aria-selected="false" aria-controls="personas" type="button">各 Bot 自拍</button>
+      </nav>
+      <fieldset id="editor" disabled>
+        <section id="models" role="tabpanel" aria-labelledby="models-tab">
+          <div class="section-head">
+            <label class="field mode-field">任务类型
+              <select id="mode">
+                <option value="txt2img">文生图</option>
+                <option value="img2img">图生图 / 改图</option>
+                <option value="persona">人格自拍</option>
+                <option value="admin">管理员生图</option>
+                <option value="video">视频生成</option>
+              </select>
+            </label>
+            <button id="add-route" type="button">添加模型</button>
+          </div>
+          <p id="route-help" class="muted">启用的模型按从上到下尝试；失败后自动使用下一个模型。</p>
+          <div id="routes" class="route-list"></div>
+          <div id="video-settings" class="card" hidden>
+            <label class="field">视频模型供应商<select id="video-provider"></select></label>
+          </div>
+          <div id="deadline-settings" class="card compact">
+            <label class="field">生图总时限（秒）<input id="task-timeout" type="number" min="30" max="3600" step="1" /></label>
+            <p class="muted">包含各模型的重试、回退和图片下载。超时后结束本次任务。</p>
+          </div>
+        </section>
+        <section id="personas" role="tabpanel" aria-labelledby="personas-tab" hidden>
+          <div class="section-head">
+            <label class="field mode-field">选择自拍资料<select id="profile"></select></label>
+            <div class="actions">
+              <button id="add-profile" type="button">新建资料</button>
+              <button id="remove-profile" class="danger-text" type="button">移除资料</button>
+            </div>
+          </div>
+          <div id="profile-empty" class="empty" hidden>还没有自拍资料。新建一套并绑定 Bot 后，即可上传它的参考图。</div>
+          <div id="profile-editor" class="card">
+            <div class="fields">
+              <label class="field">资料名称<input id="profile-name" type="text" maxlength="80" /></label>
+              <label class="field">绑定 Bot<select id="profile-bot"></select></label>
+              <label class="field">默认画风<select id="profile-style"><option value="photo">真人摄影</option><option value="anime">动漫插画</option><option value="follow">跟随本次要求</option></select></label>
+              <label class="field">默认分辨率<select id="profile-resolution"><option value="inherit">使用插件的自拍默认分辨率</option><option value="1K">1K</option><option value="2K">2K</option><option value="4K">4K</option></select></label>
+            </div>
+            <label class="field identity-field">人物身份补充<textarea id="profile-identity" rows="4" maxlength="4096" placeholder="可填写发色、瞳色、脸型等。人物身份以这个 Bot 的参考图为准。"></textarea></label>
+            <div class="library-head">
+              <div><h2>身份参考图</h2><p id="reference-help" class="muted"></p></div>
+              <label class="upload-button">上传参考图<input id="reference-upload" type="file" accept="image/png,image/jpeg,image/webp" multiple /></label>
+            </div>
+            <div id="references" class="reference-grid"></div>
+          </div>
+        </section>
+      </fieldset>
+      <footer class="page-footer"><a href="https://github.com/TenmaGabriel0721/astrbot_plugin_visora" target="_blank" rel="noopener noreferrer">映境 Visora v1.0.0 · 源码</a></footer>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+name: astrbot_plugin_visora
+display_name: 映境 Visora
+short_desc: 多模型影像创作、可视化模型排序与各 Bot 独立自拍。
+desc: 映境 Visora 是 AstrBot 的图像与视频创作插件，支持文生图、图生图、后台生成、供应商下拉选择、模型顺序管理、各 Bot 独立人物资料与参考图，以及可选的积分系统。
+version: v1.0.0
+author: TenmaGabriel0721
+repo: https://github.com/TenmaGabriel0721/astrbot_plugin_visora
+astrbot_version: ">=4.29.4,<5"
