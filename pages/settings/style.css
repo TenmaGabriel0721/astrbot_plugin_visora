@@ -22,7 +22,7 @@ button.danger-text { color:var(--danger); }
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.upload-button:focus-within { outline:2px solid var(--primary); outline-offset:3px; }
 .status { padding:12px 0; color:var(--muted); min-height:46px; overflow-wrap:anywhere; }
 .status.error { color:var(--danger); }
-.tabs { display:flex; gap:8px; margin:4px 0 22px; padding-bottom:15px; border-bottom:1px solid var(--line); }
+.tabs { display:flex; gap:8px; flex-wrap:wrap; margin:4px 0 22px; padding-bottom:15px; border-bottom:1px solid var(--line); }
 .tabs button.active { color:var(--primary); border-color:var(--primary); background:var(--soft); }
 fieldset { padding:0; margin:0; border:0; min-width:0; }
 .field { display:flex; flex-direction:column; gap:6px; font-weight:500; min-width:0; }
@@ -41,6 +41,8 @@ textarea { resize:vertical; }
 .toggle input { width:17px; min-height:17px; margin:0; accent-color:var(--primary); }
 .fields { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr); gap:16px; }
 .custom-path,.identity-field { margin-top:16px; }
+.preset-fields { margin-top:16px; }
+.preset-usage { margin-top:16px; overflow-wrap:anywhere; }
 .compact { display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
 .compact .field { width:220px; }
 .empty { border:1px dashed var(--line); padding:25px; border-radius:12px; text-align:center; color:var(--muted); margin-top:16px; }

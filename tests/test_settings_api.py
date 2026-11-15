@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from astrbot_plugin_visora.main import VisoraPlugin
 from astrbot_plugin_visora.persona_profiles import PersonaProfileStore
+from astrbot_plugin_visora.presets import normalize_presets
 from astrbot_plugin_visora.settings_api import SettingsPageApi
 from PIL import Image
 
@@ -102,6 +103,77 @@ def make_api(tmp_path):
     return SettingsPageApi(plugin)
 
 
+@pytest.mark.asyncio
+async def test_page_presets_can_be_created_edited_and_deleted_without_restart(tmp_path):
+    api = make_api(tmp_path)
+    preset = {
+        "__template_key": "txt2img",
+        "name": "旅行海报",
+        "prompt": "minimalist travel poster",
+        "aspect_ratio": "3:4",
+        "resolution": "4K",
+    }
+    payload = api.snapshot()
+    payload["presets"].append(preset)
+    for action in ("create", "edit", "delete"):
+        if action == "edit":
+            payload["presets"][-1].update(
+                __template_key="img2img", prompt="convert the reference to a poster"
+            )
+        elif action == "delete":
+            payload["presets"].pop()
+        with patch(
+            "astrbot_plugin_visora.settings_api.request",
+            SimpleNamespace(json=AsyncMock(return_value=payload)),
+        ):
+            result = await api.save_settings()
+        assert result["status"] == "ok"
+        payload = result["data"]
+        if action == "delete":
+            assert "旅行海报" not in api.plugin.presets
+        else:
+            saved = api.plugin.presets["旅行海报"]
+            assert saved["__template_key"] == (
+                "txt2img" if action == "create" else "img2img"
+            )
+            assert saved["aspect_ratio"] == "3:4"
+            assert saved["resolution"] == "4K"
+
+
+@pytest.mark.asyncio
+async def test_invalid_preset_submission_preserves_all_settings_and_runtime(tmp_path):
+    api = make_api(tmp_path)
+    original = copy.deepcopy(dict(api.plugin.config))
+    previous = copy.deepcopy(api.plugin.presets)
+    payload = api.snapshot()
+    payload["presets"][0]["prompt"] = " "
+    payload["routes"].reverse()
+    with patch(
+        "astrbot_plugin_visora.settings_api.request",
+        SimpleNamespace(json=AsyncMock(return_value=payload)),
+    ):
+        result = await api.save_settings()
+    assert result["status"] == "error"
+    assert "提示词" in result["message"]
+    assert dict(api.plugin.config) == original
+    assert api.plugin.presets == previous
+
+
+@pytest.mark.asyncio
+async def test_preset_command_edit_invalidates_an_open_page_revision(tmp_path):
+    api = make_api(tmp_path)
+    payload = api.snapshot()
+    api.plugin._config_set("presets", ["another:updated from a command"])
+    with patch(
+        "astrbot_plugin_visora.settings_api.request",
+        SimpleNamespace(json=AsyncMock(return_value=payload)),
+    ):
+        result = await api.save_settings()
+    assert result["status"] == "error"
+    assert "别处更新" in result["message"]
+    assert api.plugin._config_get("presets") == ["another:updated from a command"]
+
+
 def test_migrated_flat_keys_cannot_override_new_grouped_settings_on_reload(tmp_path):
     api = make_api(tmp_path)
     plugin = api.plugin
@@ -154,7 +226,9 @@ async def test_one_list_swap_updates_both_priorities_and_runtime_without_touchin
     ] == [0, 1]
     assert api.plugin.default_provider_full_id == "images/gpt-image"
     assert saved["comfort"] == original["comfort"]
-    assert saved["wake_interaction"] == original["wake_interaction"]
+    assert normalize_presets(saved["wake_interaction"]["presets"]) == normalize_presets(
+        original["wake_interaction"]["presets"]
+    )
 
 
 @pytest.mark.asyncio

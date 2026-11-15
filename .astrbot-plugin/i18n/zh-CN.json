@@ -1,8 +1,8 @@
 {
   "metadata": {
     "display_name": "映境 Visora",
-    "short_desc": "多模型影像创作、可视化模型排序与各 Bot 独立自拍。",
-    "desc": "映境 Visora 支持图像与视频创作、后台任务、模型顺序管理和各 Bot 独立人物资料，由 TenmaGabriel0721 独立维护。"
+    "short_desc": "多模型影像创作、模型与预设管理，以及各 Bot 独立自拍。",
+    "desc": "映境 Visora 支持图像与视频创作、后台任务、模型顺序管理、分类预设编辑和各 Bot 独立人物资料，由 TenmaGabriel0721 独立维护。"
   },
   "pages": {
     "settings": {

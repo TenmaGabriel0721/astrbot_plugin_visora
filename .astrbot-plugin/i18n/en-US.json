@@ -1,8 +1,8 @@
 {
   "metadata": {
     "display_name": "Visora",
-    "short_desc": "Image and video creation with visual model ordering and per-Bot portraits.",
-    "desc": "Visora supports image and video creation, persistent background tasks, visual model routing, and separate persona references for each Bot. Independently maintained by TenmaGabriel0721."
+    "short_desc": "Image and video creation with model ordering, preset management, and per-Bot portraits.",
+    "desc": "Visora supports image and video creation, persistent background tasks, visual model routing, text and image preset editing, and separate persona references for each Bot. Independently maintained by TenmaGabriel0721."
   },
   "pages": {
     "settings": {

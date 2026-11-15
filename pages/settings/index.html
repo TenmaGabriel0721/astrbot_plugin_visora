@@ -14,7 +14,7 @@
           <img class="brand-icon" src="./logo.svg" width="48" height="48" alt="" />
           <div>
             <h1>映境 Visora 管理</h1>
-            <p>调整模型尝试顺序，为每个 Bot 配置自己的自拍。</p>
+            <p>管理模型顺序、创作预设和各 Bot 的独立自拍。</p>
           </div>
         </div>
         <div class="actions">
@@ -26,6 +26,7 @@
       <div id="status" class="status" role="status" aria-live="polite">正在读取设置…</div>
       <nav class="tabs" role="tablist" aria-label="配置类型">
         <button id="models-tab" class="active" role="tab" aria-selected="true" aria-controls="models" type="button">模型顺序</button>
+        <button id="presets-tab" role="tab" aria-selected="false" aria-controls="presets" type="button">预设</button>
         <button id="personas-tab" role="tab" aria-selected="false" aria-controls="personas" type="button">各 Bot 自拍</button>
       </nav>
       <fieldset id="editor" disabled>
@@ -50,6 +51,30 @@
           <div id="deadline-settings" class="card compact">
             <label class="field">生图总时限（秒）<input id="task-timeout" type="number" min="30" max="3600" step="1" /></label>
             <p class="muted">包含各模型的重试、回退和图片下载。超时后结束本次任务。</p>
+          </div>
+        </section>
+        <section id="presets" role="tabpanel" aria-labelledby="presets-tab" hidden>
+          <div class="section-head">
+            <label class="field mode-field">预设分类<select id="preset-mode"><option value="txt2img">文生图</option><option value="img2img">图生图</option></select></label>
+            <div class="actions">
+              <button id="add-preset" type="button">新建预设</button>
+              <button id="remove-preset" class="danger-text" type="button">移除预设</button>
+            </div>
+          </div>
+          <p class="muted">预设需要带当前平台的指令前缀。图生图预设须同时发送图片或引用图片；缺图时会提示，不开始生成、不扣费。</p>
+          <div id="preset-empty" class="empty" hidden>这个分类还没有预设，点击“新建预设”开始编辑。</div>
+          <div id="preset-editor" class="card">
+            <label class="field">选择预设<select id="preset"></select></label>
+            <div class="fields preset-fields">
+              <label class="field">预设名称<input id="preset-name" type="text" maxlength="80" placeholder="发送指令时使用这个名称" /></label>
+              <label class="field">生成类型<select id="preset-kind"><option value="txt2img">文生图</option><option value="img2img">图生图</option></select></label>
+            </div>
+            <label class="field identity-field">提示词<textarea id="preset-prompt" rows="8" maxlength="32768" placeholder="填写画面要求；用户可以在预设名后追加本次要求。"></textarea></label>
+            <div class="fields preset-fields">
+              <label class="field">画面比例<select id="preset-ratio"><option value="inherit">跟随默认比例</option><option value="1:1">1:1</option><option value="2:3">2:3</option><option value="3:2">3:2</option><option value="3:4">3:4</option><option value="4:3">4:3</option><option value="4:5">4:5</option><option value="5:4">5:4</option><option value="9:16">9:16</option><option value="16:9">16:9</option><option value="21:9">21:9</option><option value="auto">自动</option></select></label>
+              <label class="field">分辨率<select id="preset-resolution"><option value="inherit">跟随默认分辨率</option><option value="1K">1K</option><option value="2K">2K</option><option value="4K">4K</option></select></label>
+            </div>
+            <p id="preset-usage" class="muted preset-usage"></p>
           </div>
         </section>
         <section id="personas" role="tabpanel" aria-labelledby="personas-tab" hidden>
@@ -77,7 +102,7 @@
           </div>
         </section>
       </fieldset>
-      <footer class="page-footer"><a href="https://github.com/TenmaGabriel0721/astrbot_plugin_visora" target="_blank" rel="noopener noreferrer">映境 Visora v1.0.0 · 源码</a></footer>
+      <footer class="page-footer"><a href="https://github.com/TenmaGabriel0721/astrbot_plugin_visora" target="_blank" rel="noopener noreferrer">映境 Visora v1.1.0 · 源码</a></footer>
     </div>
   </body>
 </html>

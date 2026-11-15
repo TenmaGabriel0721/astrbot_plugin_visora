@@ -24,6 +24,7 @@ from astrbot_plugin_visora.main import (
     BackgroundCompletionRejectedError,
     VisoraPlugin,
 )
+from astrbot_plugin_visora.presets import normalize_presets
 from astrbot_plugin_visora.reference_images import ReferenceSelection
 
 
@@ -1692,12 +1693,17 @@ async def test_core_generate_expands_valid_preset_before_background_generation(
     plugin.default_aspect_ratio = "1:1"
     plugin.default_resolution = "2K"
     plugin.max_reference_images_per_request = 4
-    plugin.presets = {preset_name: preset_content}
+    preset = normalize_presets([f"{preset_name}:{preset_content}"])[0]
+    preset["__template_key"] = "txt2img"
+    plugin.presets = {preset_name: preset}
     plugin._download_image = AsyncMock()
     plugin._download_reference_source_groups = AsyncMock()
     plugin._generate_and_send_image_async = AsyncMock()
     plugin.create_background_task = Mock(side_effect=pending.append)
     event = SyntheticEvent()
+    event.message_obj = SimpleNamespace(
+        message_str=f"~生图 {prompt}", message=[Comp.Plain(text=f"~生图 {prompt}")]
+    )
 
     results = [
         item

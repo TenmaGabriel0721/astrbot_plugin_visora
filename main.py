@@ -55,6 +55,7 @@ from .llm_tools import (
     VisoraVideoGenerationTool,
 )
 from .persona_profiles import PersonaProfileStore
+from .presets import PRESET_MODES, normalize_presets
 from .public_media import build_media_url, ensure_public_media_route, get_registry
 from .reference_images import (
     ReferenceSelection,
@@ -364,8 +365,13 @@ class VisoraPlugin(Star):
         """Start the durable image task ledger and fixed worker pool."""
         await self.data_manager.initialize()
         normalized_profiles = self.persona_profiles.profiles()
-        if self._config_get("persona_profiles", []) != normalized_profiles:
+        normalized_presets = list(self.presets.values())
+        if (
+            self._config_get("persona_profiles", []) != normalized_profiles
+            or self._config_get("presets", []) != normalized_presets
+        ):
             self._config_set("persona_profiles", normalized_profiles)
+            self._config_set("presets", normalized_presets)
             await asyncio.to_thread(self.config.save_config)
         await self.persona_profiles.migrate_legacy()
         from .settings_api import SettingsPageApi
@@ -1037,21 +1043,16 @@ class VisoraPlugin(Star):
         logger.info(f"[Visora] Using system provider: {provider_id}")
         return True
 
-    def _load_presets(self) -> dict[str, str]:
-        """加载预设提示词配置"""
-        presets_config = self._config_get("presets", [])
-        presets_dict = {}
+    def _load_presets(self) -> dict[str, dict[str, str]]:
+        """Load typed presets and compatible legacy templates.
 
-        if not isinstance(presets_config, list):
-            return presets_dict
-
-        for preset_str in presets_config:
-            if isinstance(preset_str, str) and ":" in preset_str:
-                name, prompt = preset_str.split(":", 1)
-                if name.strip() and prompt.strip():
-                    presets_dict[name.strip()] = prompt.strip()
-
-        return presets_dict
+        Returns:
+            Normalized preset entries keyed by their shortcut names.
+        """
+        return {
+            item["name"]: item
+            for item in normalize_presets(self._config_get("presets", []))
+        }
 
     def _check_rate_limit(self, user_id: str) -> bool:
         """检查用户请求频率是否超限"""
@@ -1357,9 +1358,10 @@ class VisoraPlugin(Star):
                 f"[Visora] Failed to recover the shortcut prefix from the raw message: {e}"
             )
 
+        prefixes = self._get_command_prefixes(event)
         for candidate in candidates:
             normalized = self._strip_at_mentions_from_text(candidate)
-            _, had_prefix = self._strip_command_prefix(normalized)
+            _, had_prefix = self._strip_command_prefix(normalized, prefixes)
             if had_prefix:
                 return normalized
         return ""
@@ -1371,11 +1373,39 @@ class VisoraPlugin(Star):
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 
+    def _get_command_prefixes(self, event: AstrMessageEvent) -> list[str]:
+        """Read shortcut prefixes from the current chat's configuration.
+
+        Args:
+            event: Event used to select the active AstrBot configuration.
+
+        Returns:
+            Nonempty prefixes, longest first, with both tilde forms supported.
+        """
+        context = getattr(self, "context", None)
+        if context is None:
+            return list(self.COMMAND_PREFIXES)
+        try:
+            config = context.get_config(getattr(event, "unified_msg_origin", None))
+        except TypeError:
+            config = context.get_config()
+        prefixes = config.get("wake_prefix", list(self.COMMAND_PREFIXES))
+        if isinstance(prefixes, str):
+            prefixes = [prefixes]
+        if not isinstance(prefixes, list):
+            return []
+        result = {p for p in prefixes if isinstance(p, str) and p}
+        if result & {"~", "～"}:
+            result.update({"~", "～"})
+        return sorted(result, key=len, reverse=True)
+
     @classmethod
-    def _strip_command_prefix(cls, text: str) -> tuple[str, bool]:
+    def _strip_command_prefix(
+        cls, text: str, prefixes: list[str] | None = None
+    ) -> tuple[str, bool]:
         """移除一个常见命令前缀，并返回是否命中前缀。"""
         normalized = str(text or "").strip()
-        for prefix in cls.COMMAND_PREFIXES:
+        for prefix in cls.COMMAND_PREFIXES if prefixes is None else prefixes:
             if normalized.startswith(prefix):
                 return normalized[len(prefix) :].strip(), True
         return normalized, False
@@ -1394,7 +1424,7 @@ class VisoraPlugin(Star):
         )
         names = sorted(set(names), key=len, reverse=True)
 
-        text, _ = self._strip_command_prefix(text)
+        text, _ = self._strip_command_prefix(text, self._get_command_prefixes(event))
 
         for name in names:
             if text == name:
@@ -1556,15 +1586,18 @@ class VisoraPlugin(Star):
 
 ✨ 预设
   ～<预设名> [补充要求]
-    直接使用预设快速生成图片；半角 ~ 同样支持。
+    按预设分类生成图片；半角 ~ 同样支持。
+    图生图预设需同时发送或引用图片，缺图时不生成、不扣费。
+    @、回复和私聊唤醒不能替代预设指令前缀。
 
   示例：
-    ～手办化
-    ～手办化 蓝色头发，微笑
-    ~生图 手办化（兼容原用法）
+    [发送图片] + ～手办化
+    [引用图片] + ～手办化 蓝色头发，微笑
+    [发送图片] + ~生图 手办化
 
   当前可用预设：{preset_text}
-  查看全部预设：~预设
+  查看预设分类：~预设 文生图 / ~预设 图生图
+  编辑预设：映境管理页 → 预设
 {economy_lines}
 📌 其他命令
   ~预设 - 查看预设列表
@@ -2463,7 +2496,9 @@ class VisoraPlugin(Star):
             return
 
         require_prefix = self._config_get("require_prefix", False)
-        text, had_prefix = self._strip_command_prefix(raw_text)
+        text, had_prefix = self._strip_command_prefix(
+            raw_text, self._get_command_prefixes(event)
+        )
 
         # The registered admin image command is handled by its own decorator.
         # Avoid duplicate dispatch through dynamic aliases or preset shortcuts.
@@ -2518,8 +2553,8 @@ class VisoraPlugin(Star):
         if not self.presets:
             return
 
-        # Require an explicit shortcut prefix or a framework wake command when enabled.
-        if require_prefix and not (had_prefix or event.is_at_or_wake_command):
+        # Mentions, replies, and private-chat wakeups cannot replace a prefix.
+        if not had_prefix:
             return
 
         clean_text = text
@@ -2600,16 +2635,89 @@ class VisoraPlugin(Star):
             )
             return
 
-        user_id = event.get_sender_id()
+        # Resolve presets and validate the final prompt before reference I/O or notices.
+        final_prompt = prompt
+        aspect_ratio = self.default_aspect_ratio
+        resolution = self.default_resolution
 
-        # Check the rate limit before sending a wait notice.
+        preset_mode = None
+        if not preset_name and route_mode != "admin":
+            for name in sorted(self.presets, key=len, reverse=True):
+                if re.match(rf"^{re.escape(name)}(?:$|[^\w])", prompt, re.IGNORECASE):
+                    preset_name = name
+                    break
+        if preset_name and preset_name in self.presets:
+            content = self.presets[preset_name]
+            entries = normalize_presets(
+                [
+                    f"{preset_name}:{content}"
+                    if isinstance(content, str)
+                    else {**content, "name": preset_name}
+                ]
+            )
+            preset = entries[0] if entries else {}
+            extra_content = (
+                prompt[len(preset_name) :].strip(" ,，")
+                if prompt.casefold().startswith(preset_name.casefold())
+                else ""
+            )
+            final_prompt = preset.get("prompt", "")
+            if final_prompt and extra_content:
+                final_prompt = f"{final_prompt} {extra_content}"
+            if preset.get("aspect_ratio", "inherit") != "inherit":
+                aspect_ratio = preset["aspect_ratio"]
+            if preset.get("resolution", "inherit") != "inherit":
+                resolution = preset["resolution"]
+            preset_mode = preset.get("__template_key")
+
+        final_prompt = str(final_prompt or "").strip()
+        if not final_prompt:
+            yield event.plain_result("⚠️ 当前预设没有配置有效的图片生成提示词")
+            return
+
+        if preset_mode:
+            command_text = self._get_raw_prefixed_command_text(
+                event
+            ) or self._get_plain_command_text_without_ats(event)
+            _, had_prefix = self._strip_command_prefix(
+                command_text, self._get_command_prefixes(event)
+            )
+            if not had_prefix:
+                yield event.plain_result(
+                    f"⚠️ 使用预设须带指令前缀，例如 ~{preset_name}。"
+                )
+                return
+
+        # Collect reference URLs for the wait notice; defer image downloads.
+        if preset_mode == "txt2img":
+            reference_selection = ReferenceSelection()
+        elif image_urls is None:
+            if preset_mode == "img2img":
+                reference_selection = await self._collect_reference_selection(
+                    event, include_avatars=False
+                )
+            else:
+                reference_selection = await self._collect_reference_selection(event)
+        else:
+            reference_selection = selection_from_sources(
+                image_urls,
+                max_images=self.max_reference_images_per_request,
+            )
+        reference_source_groups = list(reference_selection.candidate_groups)
+        reference_image_count = reference_selection.reference_count
+
+        if preset_mode == "img2img" and not reference_selection.requested:
+            yield event.plain_result(
+                f"⚠️ 预设“{preset_name}”属于图生图，请同时发送图片或引用含图片的消息。"
+            )
+            return
+
+        user_id = event.get_sender_id()
         if not self._check_rate_limit(user_id):
             yield event.plain_result(
                 f"⚠️ 请求过于频繁，请稍后再试 (每分钟限 {self.max_requests_per_minute} 次)"
             )
             return
-
-        # Check the balance before sending a wait notice.
         if self._config_get("enable_economy", False):
             cost = self._config_get("cost_per_image", 10)
             current_points = await self.data_manager.get_points(user_id)
@@ -2618,57 +2726,6 @@ class VisoraPlugin(Star):
                     f"⚠️ {self.points_name}不足！需要 {cost} {self.points_name}，当前拥有 {current_points} {self.points_name}。\n💡 使用 ~祈福 进行签到"
                 )
                 return
-
-        # Resolve presets and validate the final prompt before reference I/O or notices.
-        final_prompt = prompt
-        aspect_ratio = self.default_aspect_ratio
-        resolution = self.default_resolution
-
-        if preset_name and preset_name in self.presets:
-            preset_content = self.presets[preset_name]
-            try:
-                if preset_content.strip().startswith("{"):
-                    preset_data = json.loads(preset_content)
-                    if isinstance(preset_data, dict):
-                        final_prompt = preset_data.get("prompt", final_prompt)
-                        aspect_ratio = preset_data.get("aspect_ratio", aspect_ratio)
-                        resolution = preset_data.get("resolution", resolution)
-                else:
-                    if final_prompt != preset_name and final_prompt.startswith(
-                        preset_name
-                    ):
-                        extra_content = final_prompt[len(preset_name) :].strip()
-                        if extra_content:
-                            final_prompt = f"{preset_content} {extra_content}"
-                        else:
-                            final_prompt = preset_content
-                    else:
-                        final_prompt = preset_content
-            except json.JSONDecodeError:
-                if final_prompt != preset_name and final_prompt.startswith(preset_name):
-                    extra_content = final_prompt[len(preset_name) :].strip()
-                    if extra_content:
-                        final_prompt = f"{preset_content} {extra_content}"
-                    else:
-                        final_prompt = preset_content
-                else:
-                    final_prompt = preset_content
-
-        final_prompt = str(final_prompt or "").strip()
-        if not final_prompt:
-            yield event.plain_result("⚠️ 当前预设没有配置有效的图片生成提示词")
-            return
-
-        # Collect reference URLs for the wait notice; defer image downloads.
-        if image_urls is None:
-            reference_selection = await self._collect_reference_selection(event)
-        else:
-            reference_selection = selection_from_sources(
-                image_urls,
-                max_images=self.max_reference_images_per_request,
-            )
-        reference_source_groups = list(reference_selection.candidate_groups)
-        reference_image_count = reference_selection.reference_count
 
         # Read local images before event completion can remove their temporary files.
         pre_loaded_images = []
@@ -2740,7 +2797,9 @@ class VisoraPlugin(Star):
                     resolution=resolution,
                     task_id=task_id,
                     preset_name=preset_name,
-                    mode=route_mode or ("img2img" if images_data else "txt2img"),
+                    mode=route_mode
+                    or preset_mode
+                    or ("img2img" if images_data else "txt2img"),
                 )
             except Exception as e:
                 logger.error(
@@ -2892,6 +2951,10 @@ class VisoraPlugin(Star):
     @filter.command("货币")
     async def currency_name_command(self, event: AstrMessageEvent):
         """修改经济系统名词"""
+        if not self.is_global_admin(event):
+            yield self.admin_required_result(event)
+            return
+
         message_str = (event.message_str or "").strip()
         parts = message_str.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
@@ -2907,9 +2970,15 @@ class VisoraPlugin(Star):
         yield event.plain_result(f"✅ 货币名词已修改为：{self.points_name}")
 
     def is_global_admin(self, event: AstrMessageEvent) -> bool:
-        """检查是否是全局管理员"""
-        admin_ids = self.context.get_config().get("admins_id", [])
-        return event.get_sender_id() in admin_ids
+        """Use the administrator role from the event's active configuration.
+
+        Args:
+            event: Incoming event whose role was resolved by AstrBot.
+
+        Returns:
+            Whether AstrBot recognizes the sender as an administrator.
+        """
+        return event.is_admin()
 
     def admin_required_result(self, event: AstrMessageEvent):
         return event.plain_result("⚠️ 无权执行此操作")
@@ -2926,30 +2995,31 @@ class VisoraPlugin(Star):
             yield event.plain_result("⚠️ 无权执行此操作")
             return
 
-        # Parse command parameters.
-        message_str = (event.message_str or "").strip()
-        parts = message_str.split()
-
-        # Find the first mention component.
-        at_seg = next(
-            (s for s in event.message_obj.message if isinstance(s, Comp.At)), None
+        content = self._get_plain_command_text_without_ats(event)
+        content, _ = self._strip_command_prefix(
+            content, self._get_command_prefixes(event)
         )
-
-        target_id = None
+        content = re.sub(r"^充值(?=\s|<@|$)", "", content, count=1).strip()
+        bot_ids = {str(event.get_self_id()), "all", "qq_official", "unknown_selfid"}
+        mention_ids = [
+            str(segment.qq)
+            for segment in event.message_obj.message
+            if isinstance(segment, Comp.At) and str(segment.qq) not in bot_ids
+        ]
+        # QQ Official leaves user mentions as markup inside Plain components.
+        mention_ids.extend(
+            user_id
+            for user_id in re.findall(r"<@!?([A-Za-z0-9_-]+)>", content)
+            if user_id not in bot_ids
+        )
+        content = re.sub(r"<@!?[A-Za-z0-9_-]+>", " ", content)
+        parts = content.split()
+        target_id = mention_ids[0] if mention_ids else None
         amount = None
 
-        if at_seg:
-            target_id = str(at_seg.qq)
-            # Find the first integer after skipping the command and mention text.
+        if target_id:
             for part in parts:
-                # Skip command text containing the recharge keyword or a slash prefix.
-                if "充值" in part or part.startswith("/"):
-                    continue
-                # Skip textual mention representations.
-                if part.startswith("@"):
-                    continue
-                # Skip an explicitly written target ID.
-                if part == target_id:
+                if part.startswith("@") or part == target_id:
                     continue
 
                 try:
@@ -2964,16 +3034,15 @@ class VisoraPlugin(Star):
                 )
                 return
         else:
-            # Legacy recharge syntax uses target_id followed by amount.
-            if len(parts) < 3:
+            if len(parts) < 2:
                 yield event.plain_result(
                     f"⚠️ 参数错误，请使用 ~充值 <用户ID> <{self.points_name}数量>"
                 )
                 return
 
-            target_id = parts[1]
+            target_id = parts[0]
             try:
-                amount = int(parts[2])
+                amount = int(parts[1])
             except ValueError:
                 yield event.plain_result(f"⚠️ {self.points_name}数量必须是整数")
                 return
@@ -2998,6 +3067,7 @@ class VisoraPlugin(Star):
         event: AstrMessageEvent,
         explicit_user_ids: list[str] | None = None,
         include_sender_avatar: bool = False,
+        include_avatars: bool = True,
     ) -> ReferenceSelection:
         return await collect_reference_selection(
             event,
@@ -3005,6 +3075,7 @@ class VisoraPlugin(Star):
             max_images=self.max_reference_images_per_request,
             max_avatars=self.max_avatar_refs_per_request,
             include_sender_avatar=include_sender_avatar,
+            include_avatars=include_avatars,
         )
 
     def _dedupe_reference_image_data(
@@ -3106,66 +3177,89 @@ class VisoraPlugin(Star):
 
     @filter.command("预设")
     async def preset_command(self, event: AstrMessageEvent):
-        """预设管理指令"""
-        user_id = event.get_sender_id()
-        masked_uid = (
-            user_id[:4] + "****" + user_id[-4:] if len(user_id) > 8 else user_id
-        )
+        """List presets by type or edit them as the current chat's administrator.
 
-        message_str = (event.message_str or "").strip()
-        logger.info(
-            f"[Visora] Received preset command - user: {masked_uid}, content: {message_str}"
-        )
-
-        parts = message_str.split(maxsplit=1)
-
-        cmd_text = ""
-        if len(parts) > 1:
-            cmd_text = parts[1].strip()
-
-        if not cmd_text:
-            if not self.presets:
+        Args:
+            event: Incoming list, add, or delete command.
+        """
+        cmd_text = self._extract_command_prompt(event, ["预设"])
+        presets = normalize_presets(self._config_get("presets", []))
+        labels = {label: mode for mode, label in PRESET_MODES.items()}
+        labels.update({mode: mode for mode in PRESET_MODES})
+        if not cmd_text or cmd_text in labels:
+            if not presets:
                 yield event.plain_result("📋 当前没有预设")
                 return
-
-            preset_list = ["📋 预设列表:"]
-            for idx, (name, prompt) in enumerate(self.presets.items(), 1):
-                display = prompt[:20] + "..." if len(prompt) > 20 else prompt
-                preset_list.append(f"{idx}. {name}: {display}")
+            preset_list = ["📋 预设列表（使用时须带指令前缀）"]
+            for mode, label in PRESET_MODES.items():
+                if cmd_text and labels[cmd_text] != mode:
+                    continue
+                entries = [p for p in presets if p["__template_key"] == mode]
+                preset_list.append(
+                    f"\n{label}"
+                    + (" · 需要发送或引用图片" if mode == "img2img" else "")
+                )
+                for item in entries:
+                    prompt = " ".join(item["prompt"].split())
+                    display = prompt[:36] + "…" if len(prompt) > 36 else prompt
+                    preset_list.append(f"  {item['name']}: {display}")
+                if not entries:
+                    preset_list.append("  暂无预设")
             yield event.plain_result("\n".join(preset_list))
             return
-
-        if cmd_text.startswith("添加 "):
-            if not self.is_global_admin(event):
-                yield self.admin_required_result(event)
-                return
-            parts = cmd_text[3:].split(":", 1)
-            if len(parts) == 2:
-                name, prompt = parts
-                self.presets[name.strip()] = prompt.strip()
-                # Save the configuration.
-                self._config_set(
-                    "presets", [f"{k}:{v}" for k, v in self.presets.items()]
+        if not cmd_text.startswith(("添加 ", "删除 ")):
+            yield event.plain_result(
+                "用法：~预设 [文生图/图生图]\n"
+                "~预设 添加 <文生图/图生图> <名称>:<提示词>\n"
+                "~预设 删除 <名称>\n也可在映境管理页的“预设”中编辑。"
+            )
+            return
+        if not self.is_global_admin(event):
+            yield self.admin_required_result(event)
+            return
+        previous = copy.deepcopy(dict(self.config))
+        try:
+            if cmd_text.startswith("添加 "):
+                definition = cmd_text[3:].strip()
+                mode_label, _, rest = definition.partition(" ")
+                mode = labels.get(mode_label)
+                if mode:
+                    definition = rest.strip()
+                item = normalize_presets([definition], strict=True)[0]
+                if mode:
+                    item["__template_key"] = mode
+                existing = next(
+                    (
+                        i
+                        for i, p in enumerate(presets)
+                        if p["name"].casefold() == item["name"].casefold()
+                    ),
+                    None,
                 )
-                self.config.save_config()
-                yield event.plain_result(f"✅ 预设已添加: {name.strip()}")
+                if existing is None:
+                    presets.append(item)
+                else:
+                    presets[existing] = item
+                message = f"✅ 已保存{PRESET_MODES[item['__template_key']]}预设: {item['name']}"
             else:
-                yield event.plain_result("⚠️ 格式错误: ~预设 添加 名称:内容")
-
-        elif cmd_text.startswith("删除 "):
-            if not self.is_global_admin(event):
-                yield self.admin_required_result(event)
-                return
-            name = cmd_text[3:].strip()
-            if name in self.presets:
-                del self.presets[name]
-                self._config_set(
-                    "presets", [f"{k}:{v}" for k, v in self.presets.items()]
-                )
-                self.config.save_config()
-                yield event.plain_result(f"✅ 预设已删除: {name}")
-            else:
-                yield event.plain_result(f"⚠️ 预设不存在: {name}")
+                name = cmd_text[3:].strip()
+                updated = [
+                    p for p in presets if p["name"].casefold() != name.casefold()
+                ]
+                if len(updated) == len(presets):
+                    yield event.plain_result(f"⚠️ 预设不存在: {name}")
+                    return
+                presets = updated
+                message = f"✅ 预设已删除: {name}"
+            self._config_set("presets", normalize_presets(presets, strict=True))
+            await asyncio.to_thread(self.config.save_config)
+            self.presets = self._load_presets()
+            yield event.plain_result(message)
+        except Exception as exc:
+            self.config.clear()
+            self.config.update(previous)
+            self.presets = self._load_presets()
+            yield event.plain_result(f"⚠️ {self._format_user_error_detail(exc)}")
 
     def _get_persona_ref_dir(self) -> str:
         """Return the legacy directory used only for compatibility and migration.

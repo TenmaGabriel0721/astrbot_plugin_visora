@@ -1,4 +1,4 @@
-"""Dashboard settings for model order and Bot-specific identity references."""
+"""Dashboard settings for model order, presets, and Bot identity references."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from astrbot.api.web import request
 from PIL import Image, ImageOps
 
 from .persona_profiles import MAX_IDENTITY_REFERENCES, PersonaProfileStore
+from .presets import MAX_PRESETS, normalize_presets
 
 ROUTE_MODES = ("txt2img", "img2img", "persona", "admin")
 REQUEST_FORMATS = (
@@ -136,6 +137,7 @@ class SettingsPageApi:
             "profiles": self.plugin._config_get("persona_profiles", []),
             "task_timeout": self.plugin._config_get("task_timeout", 600),
             "video_provider_id": self.plugin._config_get("video_provider_id", ""),
+            "presets": self.plugin._config_get("presets", []),
         }
         revision = hashlib.sha256(
             json.dumps(
@@ -202,6 +204,8 @@ class SettingsPageApi:
             ],
             "task_timeout": getattr(self.plugin, "task_timeout", 600),
             "video_provider_id": managed["video_provider_id"],
+            "presets": normalize_presets(managed["presets"]),
+            "max_preset_count": MAX_PRESETS,
             "max_reference_count": MAX_IDENTITY_REFERENCES,
             "max_reference_bytes": int(
                 min(10, self.plugin.max_image_size_mb) * 1024 * 1024
@@ -248,6 +252,9 @@ class SettingsPageApi:
                 profiles = PersonaProfileStore.normalize_profiles(
                     payload.get("profiles")
                 )
+                presets = normalize_presets(
+                    payload.get("presets", current["presets"]), strict=True
+                )
                 allowed = {item["id"] for item in current["providers"]} | {
                     item["provider_id"] for item in current["routes"]
                 }
@@ -274,6 +281,7 @@ class SettingsPageApi:
                         ("persona_profiles", profiles),
                         ("task_timeout", task_timeout),
                         ("video_provider_id", video_provider_id),
+                        ("presets", presets),
                     ):
                         self.plugin._config_set(key, value)
                     self.plugin._load_config()

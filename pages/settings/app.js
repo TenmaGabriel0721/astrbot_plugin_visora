@@ -4,7 +4,7 @@
   const bridge = window.AstrBotPluginView;
   const get = id => document.getElementById(id);
   const modes = ["txt2img", "img2img", "persona", "admin"];
-  const state = { routes: {}, profiles: [], providers: [], bots: [], formats: [], mode: "txt2img", profileId: "", revision: "", dirty: false, busy: false, savedProfileIds: new Set() };
+  const state = { routes: {}, presets: [], profiles: [], providers: [], bots: [], formats: [], mode: "txt2img", presetMode: "txt2img", presetIndex: -1, profileId: "", revision: "", dirty: false, busy: false, savedProfileIds: new Set() };
   let referenceRequest = 0;
 
   function status(message, error = false) {
@@ -21,7 +21,7 @@
     state.busy = value;
     get("editor").disabled = value || !state.revision;
     get("save").disabled = value || !state.revision;
-    for (const id of ["refresh", "reload", "models-tab", "personas-tab"]) get(id).disabled = value;
+    for (const id of ["refresh", "reload", "models-tab", "presets-tab", "personas-tab"]) get(id).disabled = value;
     const profile = state.profiles.find(item => item.id === state.profileId);
     get("reference-upload").disabled = value || !profile || !state.savedProfileIds.has(profile.id) || profile.reference_count >= state.max_reference_count;
   }
@@ -168,6 +168,37 @@
     });
   }
 
+  function renderPresets() {
+    const indices = state.presets.map((item, index) => item.__template_key === state.presetMode ? index : -1).filter(index => index >= 0);
+    if (!indices.includes(state.presetIndex)) state.presetIndex = indices[0] ?? -1;
+    const preset = state.presets[state.presetIndex];
+    const select = get("preset");
+    select.replaceChildren();
+    for (const index of indices) option(select, String(index), state.presets[index].name || "未命名预设");
+    select.value = String(state.presetIndex);
+    get("preset-mode").value = state.presetMode;
+    for (const item of get("preset-mode").options) {
+      const count = state.presets.filter(p => p.__template_key === item.value).length;
+      item.textContent = (item.value === "txt2img" ? "文生图" : "图生图") + `（${count}）`;
+    }
+    get("preset-empty").hidden = Boolean(preset);
+    get("preset-editor").hidden = !preset;
+    get("remove-preset").disabled = !preset;
+    if (!preset) return;
+    get("preset-name").value = preset.name;
+    get("preset-kind").value = preset.__template_key;
+    get("preset-prompt").value = preset.prompt;
+    get("preset-ratio").value = preset.aspect_ratio;
+    get("preset-resolution").value = preset.resolution;
+    renderPresetUsage();
+  }
+
+  function renderPresetUsage() {
+    const preset = state.presets[state.presetIndex];
+    if (!preset) return;
+    get("preset-usage").textContent = `使用示例：~${preset.name || "预设名称"} [补充要求]` + (preset.__template_key === "img2img" ? " · 需同时发送或引用图片" : " · 使用文字生成，无需提供图片");
+  }
+
   async function loadReferences(profileId) {
     const requestId = ++referenceRequest;
     get("references").replaceChildren();
@@ -256,11 +287,12 @@
 
   function applySettings(data) {
     for (const mode of modes) state.routes[mode] = data.routes.filter(item => item.__template_key === mode);
-    for (const key of ["profiles", "providers", "bots", "formats", "revision", "task_timeout", "video_provider_id", "max_reference_count", "max_reference_bytes"]) state[key] = data[key];
+    for (const key of ["presets", "profiles", "providers", "bots", "formats", "revision", "task_timeout", "video_provider_id", "max_reference_count", "max_reference_bytes", "max_preset_count"]) state[key] = data[key];
     state.savedProfileIds = new Set(state.profiles.map(item => item.id));
     state.dirty = false;
     get("task-timeout").value = state.task_timeout;
     renderRoutes();
+    renderPresets();
     renderProfile();
   }
 
@@ -269,16 +301,16 @@
     status("正在保存…");
     try {
       const routes = modes.flatMap(mode => state.routes[mode].map((item, priority) => ({ ...item, __template_key: mode, priority })));
-      const data = await bridge.apiPost("page/settings", { routes, profiles: state.profiles, revision: state.revision, task_timeout: Number(get("task-timeout").value), video_provider_id: state.video_provider_id });
+      const data = await bridge.apiPost("page/settings", { routes, presets: state.presets, profiles: state.profiles, revision: state.revision, task_timeout: Number(get("task-timeout").value), video_provider_id: state.video_provider_id });
       applySettings(data);
       status("已保存并应用");
     } catch (error) { status(error.message || String(error), true); }
     finally { busy(false); }
   }
 
-  for (const [tab, panel] of [["models-tab", "models"], ["personas-tab", "personas"]]) {
+  for (const [tab, panel] of [["models-tab", "models"], ["presets-tab", "presets"], ["personas-tab", "personas"]]) {
     get(tab).addEventListener("click", () => {
-      for (const id of ["models", "personas"]) {
+      for (const id of ["models", "presets", "personas"]) {
         const active = id === panel;
         get(id).hidden = !active;
         const button = get(id + "-tab");
@@ -299,6 +331,40 @@
   });
   get("video-provider").addEventListener("change", () => { state.video_provider_id = get("video-provider").value; changed(); });
   get("task-timeout").addEventListener("input", changed);
+  get("preset-mode").addEventListener("change", () => { state.presetMode = get("preset-mode").value; renderPresets(); });
+  get("preset").addEventListener("change", () => { state.presetIndex = Number(get("preset").value); renderPresets(); });
+  for (const [id, key] of [["preset-name", "name"], ["preset-kind", "__template_key"], ["preset-prompt", "prompt"], ["preset-ratio", "aspect_ratio"], ["preset-resolution", "resolution"]]) {
+    get(id).addEventListener(id === "preset-name" || id === "preset-prompt" ? "input" : "change", () => {
+      const preset = state.presets[state.presetIndex];
+      if (!preset) return;
+      preset[key] = get(id).value;
+      if (key === "__template_key") { state.presetMode = preset.__template_key; renderPresets(); }
+      else if (key === "name") {
+        const selected = Array.from(get("preset").options).find(item => item.value === String(state.presetIndex));
+        if (selected) selected.textContent = preset.name || "未命名预设";
+      }
+      renderPresetUsage();
+      changed();
+    });
+  }
+  get("add-preset").addEventListener("click", () => {
+    if (state.presets.length >= state.max_preset_count) { status(`最多保留 ${state.max_preset_count} 个预设`, true); return; }
+    const base = state.presetMode === "txt2img" ? "新文生图预设" : "新图生图预设";
+    let name = base;
+    for (let i = 2; state.presets.some(item => item.name === name); i++) name = base + i;
+    state.presets.push({ __template_key: state.presetMode, name, prompt: "", aspect_ratio: "inherit", resolution: "inherit" });
+    state.presetIndex = state.presets.length - 1;
+    renderPresets();
+    get("preset-name").focus();
+    changed();
+  });
+  get("remove-preset").addEventListener("click", () => {
+    if (state.presetIndex < 0) return;
+    state.presets.splice(state.presetIndex, 1);
+    state.presetIndex = -1;
+    renderPresets();
+    changed();
+  });
   get("profile").addEventListener("change", () => { state.profileId = get("profile").value; renderProfile(); });
   for (const [id, key] of [["profile-name", "name"], ["profile-bot", "bot_id"], ["profile-style", "style"], ["profile-resolution", "resolution"], ["profile-identity", "identity_prompt"]]) {
     get(id).addEventListener(id === "profile-name" || id === "profile-identity" ? "input" : "change", () => {
