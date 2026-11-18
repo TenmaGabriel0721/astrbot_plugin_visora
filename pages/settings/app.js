@@ -287,10 +287,11 @@
 
   function applySettings(data) {
     for (const mode of modes) state.routes[mode] = data.routes.filter(item => item.__template_key === mode);
-    for (const key of ["presets", "profiles", "providers", "bots", "formats", "revision", "task_timeout", "video_provider_id", "max_reference_count", "max_reference_bytes", "max_preset_count"]) state[key] = data[key];
+    for (const key of ["presets", "profiles", "providers", "bots", "formats", "revision", "task_timeout", "video_provider_id", "combine_image_reply", "max_reference_count", "max_reference_bytes", "max_preset_count"]) state[key] = data[key];
     state.savedProfileIds = new Set(state.profiles.map(item => item.id));
     state.dirty = false;
     get("task-timeout").value = state.task_timeout;
+    get("combine-image-reply").checked = state.combine_image_reply !== false;
     renderRoutes();
     renderPresets();
     renderProfile();
@@ -301,7 +302,7 @@
     status("正在保存…");
     try {
       const routes = modes.flatMap(mode => state.routes[mode].map((item, priority) => ({ ...item, __template_key: mode, priority })));
-      const data = await bridge.apiPost("page/settings", { routes, presets: state.presets, profiles: state.profiles, revision: state.revision, task_timeout: Number(get("task-timeout").value), video_provider_id: state.video_provider_id });
+      const data = await bridge.apiPost("page/settings", { routes, presets: state.presets, profiles: state.profiles, revision: state.revision, task_timeout: Number(get("task-timeout").value), video_provider_id: state.video_provider_id, combine_image_reply: get("combine-image-reply").checked });
       applySettings(data);
       status("已保存并应用");
     } catch (error) { status(error.message || String(error), true); }
@@ -331,6 +332,7 @@
   });
   get("video-provider").addEventListener("change", () => { state.video_provider_id = get("video-provider").value; changed(); });
   get("task-timeout").addEventListener("input", changed);
+  get("combine-image-reply").addEventListener("change", changed);
   get("preset-mode").addEventListener("change", () => { state.presetMode = get("preset-mode").value; renderPresets(); });
   get("preset").addEventListener("change", () => { state.presetIndex = Number(get("preset").value); renderPresets(); });
   for (const [id, key] of [["preset-name", "name"], ["preset-kind", "__template_key"], ["preset-prompt", "prompt"], ["preset-ratio", "aspect_ratio"], ["preset-resolution", "resolution"]]) {

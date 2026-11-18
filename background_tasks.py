@@ -231,7 +231,7 @@ DeliveryPrepareRunner = Callable[
 DeliveryRunner = Callable[[TaskSnapshot, Any], Awaitable[None]]
 ChargeRunner = Callable[[str, str, int], Awaitable[bool]]
 RefundRunner = Callable[[str], Awaitable[bool]]
-NotificationRunner = Callable[[TaskSnapshot, str], Awaitable[None]]
+NotificationRunner = Callable[[TaskSnapshot, str], Awaitable[bool | None]]
 
 
 class BackgroundImageTaskManager:
@@ -654,8 +654,6 @@ class BackgroundImageTaskManager:
             )
             if task.delivery_state == "unknown":
                 detail += "；发送结果不确定，未自动重发"
-            elif task.error_message:
-                detail += f"；原因：{self._sanitize_text(task.error_message, 120)}"
             lines.append(detail)
         return "\n".join(lines)
 
@@ -1416,7 +1414,7 @@ class BackgroundImageTaskManager:
             return
         text = self._notification_text(snapshot)
         try:
-            await self.notify_runner(snapshot, text)  # type: ignore[misc]
+            sent = await self.notify_runner(snapshot, text)  # type: ignore[misc]
         except asyncio.CancelledError as exc:
             await self._update_columns(
                 task_id,
@@ -1445,7 +1443,7 @@ class BackgroundImageTaskManager:
         else:
             await self._update_columns(
                 task_id,
-                notification_state="sent",
+                notification_state="not_needed" if sent is False else "sent",
                 notification_error="",
             )
 

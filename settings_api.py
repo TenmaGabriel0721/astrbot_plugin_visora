@@ -138,6 +138,7 @@ class SettingsPageApi:
             "task_timeout": self.plugin._config_get("task_timeout", 600),
             "video_provider_id": self.plugin._config_get("video_provider_id", ""),
             "presets": self.plugin._config_get("presets", []),
+            "combine_image_reply": self.plugin._config_get("combine_image_reply", True),
         }
         revision = hashlib.sha256(
             json.dumps(
@@ -211,6 +212,7 @@ class SettingsPageApi:
                 min(10, self.plugin.max_image_size_mb) * 1024 * 1024
             ),
             "revision": revision,
+            "combine_image_reply": managed["combine_image_reply"],
             "config_name": Path(
                 getattr(self.plugin.config, "config_path", "当前配置")
             ).name,
@@ -255,6 +257,11 @@ class SettingsPageApi:
                 presets = normalize_presets(
                     payload.get("presets", current["presets"]), strict=True
                 )
+                combine_image_reply = payload.get(
+                    "combine_image_reply", current["combine_image_reply"]
+                )
+                if not isinstance(combine_image_reply, bool):
+                    raise ValueError("图文合并发送必须是开启或关闭")
                 allowed = {item["id"] for item in current["providers"]} | {
                     item["provider_id"] for item in current["routes"]
                 }
@@ -282,6 +289,7 @@ class SettingsPageApi:
                         ("task_timeout", task_timeout),
                         ("video_provider_id", video_provider_id),
                         ("presets", presets),
+                        ("combine_image_reply", combine_image_reply),
                     ):
                         self.plugin._config_set(key, value)
                     self.plugin._load_config()

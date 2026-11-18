@@ -11,6 +11,7 @@ from astrbot_plugin_visora.background_tasks import (
     build_scope_key,
 )
 from astrbot_plugin_visora.llm_tools import (
+    SILENT_IMAGE_TOOL_FAILURE,
     VisoraImageGenerationTool,
     VisoraImageTaskStatusTool,
 )
@@ -164,6 +165,7 @@ async def test_general_image_tool_admits_task_spec_with_frozen_image_bytes():
     assert spec.source_message_id == "message-1"
     assert spec.request_fingerprint
     assert spec.metadata == {
+        "reply_mode": "combined",
         "ack_key": spec.request_fingerprint,
         "user_prompt": "请生成一张图",
         "effective_prompt_summary": "雨夜街道上的白猫",
@@ -232,6 +234,30 @@ async def test_general_image_tool_reports_admission_rejection(error, expected):
     assert expected in result
     plugin.data_manager.deduct_points.assert_not_awaited()
     plugin.create_background_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["config", "references", "admission"])
+async def test_general_image_tool_keeps_internal_failures_out_of_the_reply(stage):
+    manager = make_manager()
+    plugin = make_plugin(manager)
+    diagnostic = "API error (502), private diagnostic sentinel"
+    target = {
+        "config": plugin._load_config,
+        "references": plugin._collect_reference_selection,
+        "admission": manager.accept,
+    }[stage]
+    target.side_effect = RuntimeError(diagnostic)
+
+    result = await VisoraImageGenerationTool(plugin=plugin).call(
+        {"event": make_event()}, prompt="一只橘猫"
+    )
+
+    assert result == SILENT_IMAGE_TOOL_FAILURE
+    assert diagnostic not in result
+    plugin.data_manager.deduct_points.assert_not_awaited()
+    if stage == "admission":
+        plugin._release_background_acceptance.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -325,3 +351,28 @@ async def test_status_tool_lists_only_the_current_scope():
         limit=5,
     )
     manager.get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_status_tool_reports_failure_without_provider_diagnostics():
+    manager = make_manager()
+    plugin = make_plugin(manager)
+    event = make_event()
+    manager.get.return_value = SimpleNamespace(
+        task_id="failed-task",
+        scope_key=build_scope_key(
+            event.unified_msg_origin, event.get_sender_id(), "cid-1"
+        ),
+        umo=event.unified_msg_origin,
+        user_id=event.get_sender_id(),
+        state="failed",
+        delivery_state="not_started",
+        error_message="API error (502), private diagnostic sentinel",
+    )
+
+    result = await VisoraImageTaskStatusTool(plugin=plugin).call(
+        {"event": event}, task_id="failed-task"
+    )
+
+    assert result == "任务 failed-task: 失败"
+    assert "502" not in result

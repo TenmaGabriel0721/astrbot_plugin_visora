@@ -62,9 +62,15 @@
   },
   "leave_reply": {
     "description": "回复展示",
-    "hint": "生成中提示、统计信息和结果附加说明显示设置",
+    "hint": "图文发送方式、生成中提示、统计信息和结果附加说明显示设置",
     "type": "object",
     "items": {
+      "combine_image_reply": {
+        "description": "图文合并发送",
+        "hint": "自然语言生图完成后，将图片和后续文字合成一条回复；关闭后先发图片，再单独回复文字。两种方式都不会向聊天发送生图报错。仅影响新受理的自然语言图片和自拍任务。",
+        "type": "bool",
+        "default": true
+      },
       "show_generating_notice": {
         "description": "显示生成中的先行提示",
         "hint": "开始生图时先发送一条“正在生成”提示，出图后会自动撤回",

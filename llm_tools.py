@@ -33,6 +33,12 @@ from .image_resolution import (
 )
 from .reference_images import collect_reference_selection
 
+SILENT_IMAGE_TOOL_FAILURE = (
+    "本次没有可发送的图片，不要声称已经生成或发送。"
+    "继续原话题自然回复，不要向用户输出工具报错、接口状态、配置故障或返还明细，"
+    "不要自动重试本工具。"
+)
+
 PERSONA_ALLOWED_ASPECT_RATIOS = (
     "1:1",
     "2:3",
@@ -341,6 +347,7 @@ class VisoraImageGenerationTool(FunctionTool[AstrAgentContext]):
     description: str = (
         "使用映境生成或修改图片。根据用户意图选择头像生图、用户图片图生图或纯文生图。\n"
         "任务受理后会在后台生成并主动发送；同一请求不要重复调用，进度请使用 visora_image_task_status 查询。\n"
+        "图片和后续文字是否合并发送由插件配置决定；不要向用户复述工具或模型供应商的报错。\n"
         "如果用户要生成当前人格自己的真实照片、自拍、近照、镜子照、穿搭照或生活照，改用 visora_persona_photo。\n"
         "资源仅表示本插件的生图消耗；消耗的资源为每个用户个人累积的，并非是公共资源，提示不足仅代表当前用户资源不够。\n"
         "\n"
@@ -453,12 +460,41 @@ class VisoraImageGenerationTool(FunctionTool[AstrAgentContext]):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
+        """Admit an image task without exposing internal exceptions to the chat.
+
+        Args:
+            context: Current AstrBot tool execution context.
+            **kwargs: Image generation parameters supplied by the LLM.
+
+        Returns:
+            Admission facts or instructions to continue the conversation quietly.
+        """
+        try:
+            return await self._admit_task(context, **kwargs)
+        except Exception as exc:
+            logger.error(
+                f"[Visora] Image tool failed before admission: {exc}", exc_info=True
+            )
+            return SILENT_IMAGE_TOOL_FAILURE
+
+    async def _admit_task(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        """Validate inputs and persist the complete image generation request.
+
+        Args:
+            context: Current AstrBot tool execution context.
+            **kwargs: Image generation parameters supplied by the LLM.
+
+        Returns:
+            Tool-facing admission result.
+        """
         if not (prompt := kwargs.get("prompt", "")):
             return "❌ 请提供图片生成的提示词"
 
         plugin = self.plugin
         if not plugin:
-            return "⚠️ 插件未正确初始化 (Plugin instance missing)"
+            return SILENT_IMAGE_TOOL_FAILURE
 
         event = get_tool_event(context)
 
@@ -466,7 +502,7 @@ class VisoraImageGenerationTool(FunctionTool[AstrAgentContext]):
             logger.warning(
                 f"[Visora] Tool call context missing event. Context type: {type(context)}"
             )
-            return "⚠️ 无法获取当前消息上下文"
+            return SILENT_IMAGE_TOOL_FAILURE
 
         # Let the background runtime load provider keys asynchronously.
         plugin._load_config()
@@ -601,7 +637,8 @@ class VisoraImageGenerationTool(FunctionTool[AstrAgentContext]):
         ).hexdigest()
         manager = getattr(plugin, "background_task_manager", None)
         if manager is None:
-            return "❌ 后台生图任务管理器未初始化"
+            logger.error("[Visora] Image task manager is unavailable")
+            return SILENT_IMAGE_TOOL_FAILURE
         register_ack = getattr(plugin, "_register_background_acceptance", None)
         release_ack = getattr(plugin, "_release_background_acceptance", None)
         ack_registered = callable(register_ack)
@@ -628,6 +665,11 @@ class VisoraImageGenerationTool(FunctionTool[AstrAgentContext]):
                     request_fingerprint=request_fingerprint,
                     charge_amount=cost if economy_enabled else 0,
                     metadata={
+                        "reply_mode": (
+                            "combined"
+                            if plugin._config_get("combine_image_reply", True)
+                            else "separate"
+                        ),
                         "ack_key": request_fingerprint,
                         "user_prompt": original_user_prompt,
                         "effective_prompt_summary": effective_prompt_summary,
@@ -650,7 +692,7 @@ class VisoraImageGenerationTool(FunctionTool[AstrAgentContext]):
             if ack_registered and callable(release_ack):
                 release_ack(request_fingerprint)
             logger.error(f"[Visora] Failed to persist a background image task: {exc}")
-            return "❌ 生图任务接收失败，请稍后再试；若已扣除资源会自动返还。"
+            return SILENT_IMAGE_TOOL_FAILURE
         except Exception as exc:
             if ack_registered and callable(release_ack):
                 release_ack(request_fingerprint)
@@ -658,7 +700,7 @@ class VisoraImageGenerationTool(FunctionTool[AstrAgentContext]):
                 f"[Visora] Failed to admit a background image task: {exc}",
                 exc_info=True,
             )
-            return "❌ 生图任务接收失败，请稍后再试；若已扣除资源会自动返还。"
+            return SILENT_IMAGE_TOOL_FAILURE
 
         logger.info(
             f"[Visora] Background task [{admission.task_id}] - prompt: {prompt} | "
@@ -754,8 +796,6 @@ class VisoraImageTaskStatusTool(FunctionTool[AstrAgentContext]):
             text = f"任务 {task.task_id}: {state_labels.get(task.state, task.state)}"
             if task.delivery_state == "unknown":
                 text += "。图片可能已发送，为避免重复不会自动重发"
-            elif task.error_message:
-                text += f"。原因：{task.error_message}"
             return text
         except BackgroundTaskError as exc:
             logger.warning(f"[Visora] Failed to query background task status: {exc}")
@@ -975,6 +1015,7 @@ class VisoraPersonaPhotoTool(FunctionTool[AstrAgentContext]):
         "用户随消息或引用提供的额外图片只用于参考服装、姿势、构图和氛围，必须忽略其中人物的脸与身份。"
         "画风遵循当前 Bot 的独立资料：真人摄影、动漫插画或跟随本次要求；不要擅自改成另一种画风。"
         "不要把本描述当作回复用户的固定话术；工具返回任务已受理后，应按当前对话语气自然简短地告知用户正在后台生成，且不要重复调用。"
+        "图片和后续文字是否合并发送由插件配置决定；不要向用户复述工具或模型供应商的报错。"
         "资源仅表示本插件的生图消耗；消耗的资源为每个用户个人累积的，并非是公共资源，提示不足仅代表当前用户资源不够。"
     )
     plugin: object = Field(default=None, exclude=True)
@@ -1035,12 +1076,44 @@ class VisoraPersonaPhotoTool(FunctionTool[AstrAgentContext]):
         context: ContextWrapper[AstrAgentContext],
         **kwargs,
     ) -> ToolExecResult:
+        """Admit a persona task without exposing internal exceptions to the chat.
+
+        Args:
+            context: Current AstrBot tool execution context.
+            **kwargs: Persona generation parameters supplied by the LLM.
+
+        Returns:
+            Admission facts or instructions to continue the conversation quietly.
+        """
+        try:
+            return await self._admit_task(context, **kwargs)
+        except Exception as exc:
+            logger.error(
+                f"[Visora][Persona] Image tool failed before admission: {exc}",
+                exc_info=True,
+            )
+            return SILENT_IMAGE_TOOL_FAILURE
+
+    async def _admit_task(
+        self,
+        context: ContextWrapper[AstrAgentContext],
+        **kwargs,
+    ) -> ToolExecResult:
+        """Resolve the Bot identity and persist the complete persona request.
+
+        Args:
+            context: Current AstrBot tool execution context.
+            **kwargs: Persona generation parameters supplied by the LLM.
+
+        Returns:
+            Tool-facing admission result.
+        """
         plugin = self.plugin
         if not plugin:
-            return "⚠️ 插件未正确初始化"
+            return SILENT_IMAGE_TOOL_FAILURE
         event = get_tool_event(context)
         if not event:
-            return "⚠️ 无法获取当前消息上下文"
+            return SILENT_IMAGE_TOOL_FAILURE
 
         # Let the background persona runtime load provider keys asynchronously.
         plugin._load_config()
@@ -1258,7 +1331,8 @@ class VisoraPersonaPhotoTool(FunctionTool[AstrAgentContext]):
         ).hexdigest()
         manager = getattr(plugin, "background_task_manager", None)
         if manager is None:
-            return "❌ 后台生图任务管理器未初始化"
+            logger.error("[Visora][Persona] Image task manager is unavailable")
+            return SILENT_IMAGE_TOOL_FAILURE
         register_ack = getattr(plugin, "_register_background_acceptance", None)
         release_ack = getattr(plugin, "_release_background_acceptance", None)
         ack_registered = callable(register_ack)
@@ -1285,6 +1359,11 @@ class VisoraPersonaPhotoTool(FunctionTool[AstrAgentContext]):
                     request_fingerprint=request_fingerprint,
                     charge_amount=cost if economy_enabled else 0,
                     metadata={
+                        "reply_mode": (
+                            "combined"
+                            if plugin._config_get("combine_image_reply", True)
+                            else "separate"
+                        ),
                         "ack_key": request_fingerprint,
                         "user_prompt": original_user_prompt,
                         "effective_prompt_summary": effective_prompt_summary,
@@ -1312,7 +1391,7 @@ class VisoraPersonaPhotoTool(FunctionTool[AstrAgentContext]):
             logger.error(
                 f"[Visora][Persona] Failed to persist a background task: {exc}"
             )
-            return "❌ 自拍任务接收失败，请稍后再试；若已扣除资源会自动返还。"
+            return SILENT_IMAGE_TOOL_FAILURE
         except Exception as exc:
             if ack_registered and callable(release_ack):
                 release_ack(request_fingerprint)
@@ -1320,7 +1399,7 @@ class VisoraPersonaPhotoTool(FunctionTool[AstrAgentContext]):
                 f"[Visora][Persona] Failed to admit a background task: {exc}",
                 exc_info=True,
             )
-            return "❌ 自拍任务接收失败，请稍后再试；若已扣除资源会自动返还。"
+            return SILENT_IMAGE_TOOL_FAILURE
 
         set_extra = getattr(event, "set_extra", None)
         if callable(set_extra):
