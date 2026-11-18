@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -9,23 +10,31 @@ import astrbot.api.message_components as Comp
 import pytest
 from astrbot.api.platform import MessageType
 from astrbot.core.agent.message import TextPart
+from astrbot.core.message.message_event_result import (
+    MessageEventResult,
+    ResultContentType,
+)
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.filter.command import CommandFilter, GreedyStr
 from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter
 from astrbot.core.star.register.star_handler import get_handler_full_name
 from astrbot.core.star.star_handler import star_handlers_registry
 from astrbot_plugin_visora.background_tasks import (
+    BackgroundImageTaskManager,
     DeliveryRejectedError,
     DeliveryUnknownError,
     GeneratedImageResult,
+    TaskSpec,
     build_scope_key,
 )
+from astrbot_plugin_visora.delivery_images import QQ_IMAGE_MAX_BYTES
 from astrbot_plugin_visora.main import (
     BackgroundCompletionRejectedError,
     VisoraPlugin,
 )
 from astrbot_plugin_visora.presets import normalize_presets
 from astrbot_plugin_visora.reference_images import ReferenceSelection
+from PIL import Image
 
 
 def make_task(**overrides) -> SimpleNamespace:
@@ -128,7 +137,7 @@ class SyntheticEvent:
 
     @staticmethod
     def plain_result(text: str):
-        return SimpleNamespace(chain=[Comp.Plain(text=text)])
+        return MessageEventResult().message(text)
 
     def request_llm(self, **kwargs):
         self.request_kwargs = kwargs
@@ -157,6 +166,26 @@ def make_delivery_plugin(*, send_result=True) -> VisoraPlugin:
     plugin.points_name = "星琼"
     plugin.data_manager = SimpleNamespace(get_points=AsyncMock(return_value=100))
     return plugin
+
+
+def make_caption_plugin(task):
+    plugin = make_delivery_plugin()
+    synthetic = SyntheticEvent()
+    adapter = SimpleNamespace(
+        create_event=Mock(return_value=synthetic),
+        commit_event=Mock(),
+    )
+    plugin.context.conversation_manager.get_conversation = AsyncMock(
+        return_value=SimpleNamespace(cid="cid-1")
+    )
+    plugin.context.get_platform_inst = Mock(return_value=adapter)
+    plugin._background_runtime_id = "runtime-1"
+    plugin._background_session_epochs = {}
+    plugin.background_task_manager = SimpleNamespace(
+        db_path=SimpleNamespace(exists=Mock(return_value=True)),
+        get=AsyncMock(return_value=task),
+    )
+    return plugin, synthetic, adapter
 
 
 @pytest.mark.asyncio
@@ -357,11 +386,419 @@ async def test_background_delivery_sends_once_and_cleans_temp_files():
     plain_text = "\n".join(
         component.text for component in chain.chain if isinstance(component, Comp.Plain)
     )
-    assert "已自动回退" in plain_text
-    assert "- 主路由：API 错误 (502)" in plain_text
-    assert "- 回退路由 1：生成超时" in plain_text
+    assert "已自动回退" not in plain_text
+    assert "API 错误" not in plain_text
+    assert "生成超时" not in plain_text
     assert "primary-model" not in plain_text
     remove_files.assert_awaited_once_with(paths)
+
+
+@pytest.mark.asyncio
+async def test_generated_images_and_persona_text_are_delivered_in_one_message():
+    task = make_task(state="generated", delivery_state="not_started")
+    task.metadata["reply_mode"] = "combined"
+    plugin, synthetic, adapter = make_caption_plugin(task)
+    paths = ["/root/.codex_claude_temp/one.png", "/root/.codex_claude_temp/two.png"]
+    generated = GeneratedImageResult(
+        [b"one", b"two"], route_failures=["primary route: API error (502)"]
+    )
+
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(side_effect=paths),
+        ),
+        patch(
+            "astrbot_plugin_visora.main.remove_temp_files", AsyncMock()
+        ) as remove_files,
+    ):
+        preparing = asyncio.create_task(
+            plugin._prepare_background_image_delivery(task, generated)
+        )
+        for _ in range(30):
+            if adapter.commit_event.called:
+                break
+            await asyncio.sleep(0)
+        adapter.commit_event.assert_called_once_with(synthetic)
+        plugin.context.send_message.assert_not_awaited()
+        assert synthetic.sent_results == []
+        assert "合成一条图文回复" in synthetic.request_kwargs["prompt"]
+
+        request = synthetic.get_extra("provider_request")
+        await plugin.inject_background_task_status(synthetic, request)
+        assert '"image_sent":false' in request.extra_user_content_parts[0].text
+        assert (
+            '"image_attached_to_reply":true' in request.extra_user_content_parts[0].text
+        )
+        assert '"state":"generated"' in request.extra_user_content_parts[0].text
+
+        synthetic.set_result(
+            synthetic.plain_result("给你留了一只雨夜的小猫～").set_result_content_type(
+                ResultContentType.LLM_RESULT
+            )
+        )
+        await plugin.ensure_background_completion_reply(synthetic)
+        await plugin.arm_background_completion_transport(synthetic)
+        await plugin.confirm_background_completion_reply(synthetic)
+        prepared = await asyncio.wait_for(preparing, timeout=1)
+        assert synthetic.get_result().chain == []
+        assert synthetic.is_stopped() is False
+        assert plugin._background_completion_waiters == {}
+        remove_files.assert_not_awaited()
+
+        task.state = "sending"
+        task.delivery_state = "attempting"
+        try:
+            await plugin._deliver_background_image_task(task, prepared.payload)
+        finally:
+            await prepared.cleanup_runner()
+        task.state = "completed"
+        task.delivery_state = "confirmed"
+        await plugin._notify_background_task(task, "task completed")
+
+    plugin.context.send_message.assert_awaited_once()
+    _, chain = plugin.context.send_message.await_args.args
+    assert [part.path for part in chain.chain if isinstance(part, Comp.Image)] == paths
+    assert chain.get_plain_text() == "给你留了一只雨夜的小猫～"
+    assert "502" not in chain.get_plain_text()
+    assert synthetic.sent_results == []
+    adapter.commit_event.assert_called_once()
+    remove_files.assert_awaited_once_with(paths)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply_text", ["", "Error processing agent: API error (502)"])
+async def test_caption_failure_uses_a_clean_combined_reply(reply_text):
+    task = make_task(state="generated", delivery_state="not_started")
+    task.metadata["reply_mode"] = "combined"
+    plugin, synthetic, adapter = make_caption_plugin(task)
+
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(return_value="/root/.codex_claude_temp/image.png"),
+        ),
+        patch("astrbot_plugin_visora.main.remove_temp_files", AsyncMock()),
+    ):
+        preparing = asyncio.create_task(
+            plugin._prepare_background_image_delivery(
+                task, GeneratedImageResult([b"image"])
+            )
+        )
+        for _ in range(30):
+            if adapter.commit_event.called:
+                break
+            await asyncio.sleep(0)
+        adapter.commit_event.assert_called_once()
+        synthetic.set_result(synthetic.plain_result(reply_text))
+        await plugin.ensure_background_completion_reply(synthetic)
+        prepared = await asyncio.wait_for(preparing, timeout=1)
+        try:
+            await plugin._deliver_background_image_task(task, prepared.payload)
+        finally:
+            await prepared.cleanup_runner()
+
+    plugin.context.send_message.assert_awaited_once()
+    _, chain = plugin.context.send_message.await_args.args
+    assert sum(isinstance(part, Comp.Image) for part in chain.chain) == 1
+    assert chain.get_plain_text() == "图片给你。"
+    assert synthetic.sent_results == []
+
+
+@pytest.mark.asyncio
+async def test_direct_core_caption_error_is_suppressed_before_any_platform_send():
+    task = make_task(state="generated", delivery_state="not_started")
+    task.metadata["reply_mode"] = "combined"
+    plugin, synthetic, adapter = make_caption_plugin(task)
+
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(return_value="/root/.codex_claude_temp/image.png"),
+        ),
+        patch("astrbot_plugin_visora.main.remove_temp_files", AsyncMock()),
+    ):
+        preparing = asyncio.create_task(
+            plugin._prepare_background_image_delivery(
+                task, GeneratedImageResult([b"image"])
+            )
+        )
+        for _ in range(30):
+            if adapter.commit_event.called:
+                break
+            await asyncio.sleep(0)
+        adapter.commit_event.assert_called_once()
+        await synthetic.send(synthetic.plain_result("Error: API error (502)"))
+        prepared = await asyncio.wait_for(preparing, timeout=1)
+        try:
+            await plugin._deliver_background_image_task(task, prepared.payload)
+        finally:
+            await prepared.cleanup_runner()
+
+    assert synthetic.sent_results == []
+    assert plugin._background_completion_waiters == {}
+    _, chain = plugin.context.send_message.await_args.args
+    assert chain.get_plain_text() == "图片给你。"
+
+
+@pytest.mark.asyncio
+async def test_caption_timeout_cannot_send_a_late_reply_or_duplicate_the_image():
+    task = make_task(state="generated", delivery_state="not_started")
+    task.metadata["reply_mode"] = "combined"
+    plugin, synthetic, adapter = make_caption_plugin(task)
+    real_wait_for = asyncio.wait_for
+
+    async def short_caption_wait(awaitable, timeout):
+        return await real_wait_for(awaitable, timeout=0.02)
+
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(return_value="/root/.codex_claude_temp/image.png"),
+        ),
+        patch("astrbot_plugin_visora.main.remove_temp_files", AsyncMock()),
+        patch("astrbot_plugin_visora.main.asyncio.wait_for", short_caption_wait),
+    ):
+        prepared = await plugin._prepare_background_image_delivery(
+            task, GeneratedImageResult([b"image"])
+        )
+        try:
+            await plugin._deliver_background_image_task(task, prepared.payload)
+        finally:
+            await prepared.cleanup_runner()
+        synthetic.set_result(
+            synthetic.plain_result("late caption").set_result_content_type(
+                ResultContentType.LLM_RESULT
+            )
+        )
+        await plugin.ensure_background_completion_reply(synthetic)
+        await synthetic.send(synthetic.get_result())
+
+    adapter.commit_event.assert_called_once()
+    plugin.context.send_message.assert_awaited_once()
+    assert synthetic.sent_results == []
+    assert synthetic.is_stopped() is True
+    assert plugin._background_completion_waiters == {}
+
+
+@pytest.mark.asyncio
+async def test_reset_during_caption_preparation_prevents_image_and_text_delivery():
+    task = make_task(state="generated", delivery_state="not_started")
+    task.metadata["reply_mode"] = "combined"
+    plugin, synthetic, adapter = make_caption_plugin(task)
+
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(return_value="/root/.codex_claude_temp/image.png"),
+        ),
+        patch(
+            "astrbot_plugin_visora.main.remove_temp_files", AsyncMock()
+        ) as remove_files,
+    ):
+        preparing = asyncio.create_task(
+            plugin._prepare_background_image_delivery(
+                task, GeneratedImageResult([b"image"])
+            )
+        )
+        for _ in range(30):
+            if adapter.commit_event.called:
+                break
+            await asyncio.sleep(0)
+        adapter.commit_event.assert_called_once()
+        plugin._background_session_epochs[task.umo] = 1
+        synthetic.set_result(
+            synthetic.plain_result("stale reply").set_result_content_type(
+                ResultContentType.LLM_RESULT
+            )
+        )
+        await plugin.ensure_background_completion_reply(synthetic)
+        prepared = await asyncio.wait_for(preparing, timeout=1)
+        try:
+            with pytest.raises(DeliveryRejectedError, match="重置"):
+                await plugin._deliver_background_image_task(task, prepared.payload)
+        finally:
+            await prepared.cleanup_runner()
+
+    plugin.context.send_message.assert_not_awaited()
+    assert synthetic.sent_results == []
+    assert synthetic.is_stopped() is True
+    assert plugin._background_completion_waiters == {}
+    remove_files.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("combine_reply", [False, True])
+@pytest.mark.parametrize("provider_fails", [False, True])
+async def test_durable_tool_delivery_combines_once_or_refunds_quietly(
+    tmp_path, provider_fails, combine_reply
+):
+    task = make_task()
+    task.metadata["reply_mode"] = "combined" if combine_reply else "separate"
+    plugin, synthetic, adapter = make_caption_plugin(task)
+    pipeline_tasks = []
+    diagnostic = "primary route: API error (502), diagnostic sentinel"
+
+    async def provider(snapshot, images):
+        if provider_fails:
+            raise RuntimeError(diagnostic)
+        return GeneratedImageResult([b"image"], route_failures=[diagnostic])
+
+    async def prepare_caption(event):
+        event.set_result(
+            event.plain_result("雨夜的小猫，送给你～").set_result_content_type(
+                ResultContentType.LLM_RESULT
+            )
+        )
+        await plugin.ensure_background_completion_reply(event)
+        if event.get_result().chain:
+            await plugin.arm_background_completion_transport(event)
+            await event.send(event.get_result())
+            await plugin.confirm_background_completion_reply(event)
+
+    adapter.commit_event.side_effect = lambda event: pipeline_tasks.append(
+        asyncio.create_task(prepare_caption(event))
+    )
+    charge = AsyncMock(return_value=True)
+    refund = AsyncMock(return_value=True)
+    manager = BackgroundImageTaskManager(
+        tmp_path,
+        provider_runner=provider,
+        delivery_prepare_runner=plugin._prepare_background_image_delivery,
+        delivery_runner=plugin._deliver_background_image_task,
+        charge_runner=charge,
+        refund_runner=refund,
+        notify_runner=plugin._notify_background_task,
+        max_running=1,
+    )
+    plugin.background_task_manager = manager
+    spec = TaskSpec(
+        scope_key=build_scope_key(task.umo, task.user_id, task.conversation_id),
+        umo=task.umo,
+        user_id=task.user_id,
+        conversation_id=task.conversation_id,
+        prompt=task.prompt,
+        charge_amount=7,
+        metadata=task.metadata,
+    )
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(return_value="/root/.codex_claude_temp/image.png"),
+        ),
+        patch("astrbot_plugin_visora.main.remove_temp_files", AsyncMock()),
+    ):
+        await manager.start()
+        try:
+            admission = await manager.accept(spec)
+            for _ in range(200):
+                snapshot = await manager.get(admission.task_id)
+                if snapshot.is_terminal and snapshot.notification_state in {
+                    "sent",
+                    "not_needed",
+                }:
+                    break
+                await asyncio.sleep(0.01)
+            assert snapshot.notification_state == (
+                "not_needed" if provider_fails or combine_reply else "sent"
+            )
+            assert "502" not in await manager.format_scope_status(spec.scope_key)
+        finally:
+            await manager.close()
+            await asyncio.gather(*pipeline_tasks)
+
+    charge.assert_awaited_once()
+    if provider_fails:
+        assert synthetic.sent_results == []
+        assert snapshot.state == "failed"
+        assert snapshot.error_message == diagnostic
+        assert snapshot.refund_state == "refunded"
+        refund.assert_awaited_once()
+        plugin.context.send_message.assert_not_awaited()
+        adapter.commit_event.assert_not_called()
+    else:
+        assert snapshot.state == "completed"
+        assert snapshot.delivery_state == "confirmed"
+        refund.assert_not_awaited()
+        plugin.context.send_message.assert_awaited_once()
+        _, chain = plugin.context.send_message.await_args.args
+        if combine_reply:
+            assert chain.get_plain_text() == "雨夜的小猫，送给你～"
+            assert synthetic.sent_results == []
+        else:
+            assert chain.get_plain_text() == ""
+            assert len(synthetic.sent_results) == 1
+            assert synthetic.sent_results[0].get_plain_text() == "雨夜的小猫，送给你～"
+        adapter.commit_event.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_caption_preparation_refunds_without_sending_images(tmp_path):
+    task = make_task()
+    task.metadata["reply_mode"] = "combined"
+    plugin, synthetic, adapter = make_caption_plugin(task)
+
+    async def provider(snapshot, images):
+        return GeneratedImageResult([b"image"])
+
+    refund = AsyncMock(return_value=True)
+    manager = BackgroundImageTaskManager(
+        tmp_path,
+        provider_runner=provider,
+        delivery_prepare_runner=plugin._prepare_background_image_delivery,
+        delivery_runner=plugin._deliver_background_image_task,
+        charge_runner=AsyncMock(return_value=True),
+        refund_runner=refund,
+        notify_runner=plugin._notify_background_task,
+        max_running=1,
+    )
+    plugin.background_task_manager = manager
+    spec = TaskSpec(
+        scope_key=build_scope_key(task.umo, task.user_id, task.conversation_id),
+        umo=task.umo,
+        user_id=task.user_id,
+        conversation_id=task.conversation_id,
+        prompt=task.prompt,
+        charge_amount=7,
+        metadata=task.metadata,
+    )
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(return_value="/root/.codex_claude_temp/image.png"),
+        ),
+        patch(
+            "astrbot_plugin_visora.main.remove_temp_files", AsyncMock()
+        ) as remove_files,
+    ):
+        await manager.start()
+        try:
+            admission = await manager.accept(spec)
+            for _ in range(200):
+                if adapter.commit_event.called:
+                    break
+                await asyncio.sleep(0.01)
+            adapter.commit_event.assert_called_once()
+            assert await manager.cancel_scope(scope_key=spec.scope_key) == 1
+            await manager.close()
+            snapshot = await manager.get(admission.task_id)
+            synthetic.set_result(
+                synthetic.plain_result(
+                    "late cancelled caption"
+                ).set_result_content_type(ResultContentType.LLM_RESULT)
+            )
+            await plugin.ensure_background_completion_reply(synthetic)
+            await synthetic.send(synthetic.get_result())
+        finally:
+            await manager.close()
+
+    assert snapshot.state == "cancelled"
+    assert snapshot.refund_state == "refunded"
+    refund.assert_awaited_once()
+    plugin.context.send_message.assert_not_awaited()
+    assert synthetic.sent_results == []
+    assert plugin._background_completion_waiters == {}
+    remove_files.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -391,6 +828,137 @@ async def test_background_delivery_false_is_rejected_and_still_cleans_files():
 
     plugin.context.send_message.assert_awaited_once()
     remove_files.assert_awaited_once_with(["/tmp/generated.png"])
+
+
+@pytest.mark.asyncio
+async def test_official_qq_delivery_reduces_upload_bytes_before_saving_and_sending():
+    buffer = BytesIO()
+    Image.new("RGB", (1536, 1536), (240, 180, 200)).save(
+        buffer, format="PNG", compress_level=0
+    )
+    original = buffer.getvalue()
+    assert len(original) > QQ_IMAGE_MAX_BYTES
+    plugin = make_delivery_plugin()
+    plugin.context.get_platform_inst = Mock(
+        return_value=SimpleNamespace(meta=lambda: SimpleNamespace(name="qq_official"))
+    )
+    task = make_task()
+
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(return_value="/root/.codex_claude_temp/image.png"),
+        ) as save_image,
+        patch("astrbot_plugin_visora.main.remove_temp_files", AsyncMock()),
+    ):
+        prepared = await plugin._prepare_background_image_delivery(
+            task, GeneratedImageResult([original])
+        )
+        try:
+            await plugin._deliver_background_image_task(task, prepared.payload)
+        finally:
+            await prepared.cleanup_runner()
+
+    upload_bytes = save_image.await_args.args[0]
+    assert len(upload_bytes) <= QQ_IMAGE_MAX_BYTES
+    with Image.open(BytesIO(upload_bytes)) as image:
+        assert image.size == (1536, 1536)
+    plugin.context.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_single_qq_upload_size_rejection_refunds_and_stays_quiet(tmp_path):
+    plugin = make_delivery_plugin()
+    plugin.context.get_platform_inst = Mock(
+        return_value=SimpleNamespace(meta=lambda: SimpleNamespace(name="qq_official"))
+    )
+    plugin.context.send_message.side_effect = RuntimeError("上传文件大小超过限制")
+    task = make_task()
+
+    async def provider(snapshot, images):
+        return GeneratedImageResult([b"image"])
+
+    refund = AsyncMock(return_value=True)
+    manager = BackgroundImageTaskManager(
+        tmp_path,
+        provider_runner=provider,
+        delivery_prepare_runner=plugin._prepare_background_image_delivery,
+        delivery_runner=plugin._deliver_background_image_task,
+        charge_runner=AsyncMock(return_value=True),
+        refund_runner=refund,
+        notify_runner=plugin._notify_background_task,
+        max_running=1,
+    )
+    plugin.background_task_manager = manager
+    spec = TaskSpec(
+        scope_key=build_scope_key(task.umo, task.user_id, task.conversation_id),
+        umo=task.umo,
+        user_id=task.user_id,
+        conversation_id=task.conversation_id,
+        prompt=task.prompt,
+        charge_amount=72,
+        metadata=task.metadata,
+    )
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(return_value="/root/.codex_claude_temp/image.png"),
+        ),
+        patch("astrbot_plugin_visora.main.remove_temp_files", AsyncMock()),
+    ):
+        await manager.start()
+        try:
+            admission = await manager.accept(spec)
+            for _ in range(200):
+                snapshot = await manager.get(admission.task_id)
+                if (
+                    snapshot.refund_state == "refunded"
+                    and snapshot.notification_state == "not_needed"
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            assert snapshot.state == "failed"
+            assert snapshot.delivery_state == "rejected"
+            assert snapshot.error_code == "delivery_rejected"
+            assert snapshot.refund_state == "refunded"
+        finally:
+            await manager.close()
+
+    refund.assert_awaited_once()
+    plugin.context.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_partial_qq_multi_image_rejection_keeps_delivery_unknown():
+    plugin = make_delivery_plugin()
+    plugin.context.get_platform_inst = Mock(
+        return_value=SimpleNamespace(meta=lambda: SimpleNamespace(name="qq_official"))
+    )
+    plugin.context.send_message.side_effect = RuntimeError("上传文件大小超过限制")
+    task = make_task()
+
+    with (
+        patch(
+            "astrbot_plugin_visora.main.save_generated_image",
+            AsyncMock(
+                side_effect=[
+                    "/root/.codex_claude_temp/one.png",
+                    "/root/.codex_claude_temp/two.png",
+                ]
+            ),
+        ),
+        patch("astrbot_plugin_visora.main.remove_temp_files", AsyncMock()),
+    ):
+        prepared = await plugin._prepare_background_image_delivery(
+            task, GeneratedImageResult([b"one", b"two"])
+        )
+        try:
+            with pytest.raises(DeliveryUnknownError):
+                await plugin._deliver_background_image_task(task, prepared.payload)
+        finally:
+            await prepared.cleanup_runner()
+
+    plugin.context.send_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -591,6 +1159,51 @@ async def test_completed_image_commits_llm_reply_only_after_image_confirmation()
         await asyncio.wait_for(notifying, timeout=1)
 
     assert len(synthetic.sent_results) == 1
+    assert plugin._background_completion_waiters == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_name", ["qq_official", "qq_official_webhook"])
+@pytest.mark.parametrize("send_result", [True, False])
+async def test_separate_qq_completion_uses_session_send(adapter_name, send_result):
+    task = make_task()
+    task.metadata["reply_mode"] = "separate"
+    plugin, synthetic, adapter = make_caption_plugin(task)
+    adapter.meta = lambda: SimpleNamespace(name=adapter_name)
+    plugin.context.send_message.return_value = send_result
+    synthetic.send_error = AssertionError("The inbound SDK source must not be used")
+
+    notifying = asyncio.create_task(plugin._notify_background_task(task, "图片已发送"))
+    for _ in range(20):
+        if adapter.commit_event.called:
+            break
+        await asyncio.sleep(0)
+    adapter.commit_event.assert_called_once_with(synthetic)
+
+    synthetic.set_result(
+        synthetic.plain_result("给你画好了，接着聊吧。").set_result_content_type(
+            ResultContentType.LLM_RESULT
+        )
+    )
+    await plugin.ensure_background_completion_reply(synthetic)
+    await plugin.arm_background_completion_transport(synthetic)
+    if send_result:
+        await synthetic.send(synthetic.get_result())
+    else:
+        with pytest.raises(RuntimeError, match="destination is unavailable"):
+            await synthetic.send(synthetic.get_result())
+    await plugin.confirm_background_completion_reply(synthetic)
+    if send_result:
+        await asyncio.wait_for(notifying, timeout=1)
+    else:
+        with pytest.raises(DeliveryUnknownError):
+            await asyncio.wait_for(notifying, timeout=1)
+
+    plugin.context.send_message.assert_awaited_once()
+    destination, message = plugin.context.send_message.await_args.args
+    assert destination == task.umo
+    assert "给你画好了，接着聊吧。" in message.get_plain_text()
+    assert synthetic.sent_results == []
     assert plugin._background_completion_waiters == {}
 
 
@@ -1214,7 +1827,7 @@ async def test_recovered_completion_from_old_runtime_never_reenters_llm():
 
 
 @pytest.mark.asyncio
-async def test_failed_old_conversation_task_still_sends_terminal_notification():
+async def test_failed_old_conversation_task_does_not_send_error_notice():
     plugin = object.__new__(VisoraPlugin)
     conversation_manager = SimpleNamespace(
         get_curr_conversation_id=AsyncMock(return_value="cid-2")
@@ -1234,9 +1847,7 @@ async def test_failed_old_conversation_task_still_sends_terminal_notification():
     await plugin._notify_background_task(task, "刚才那次生图没有成功。")
 
     conversation_manager.get_curr_conversation_id.assert_not_awaited()
-    plugin.context.send_message.assert_awaited_once()
-    _, chain = plugin.context.send_message.await_args.args
-    assert chain.chain[0].text == "刚才那次生图没有成功。"
+    plugin.context.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1247,7 +1858,7 @@ async def test_terminal_notification_transport_error_is_unknown():
     )
     plugin.background_send_timeout = 0.5
     plugin.points_name = "星琼"
-    task = make_task(state="failed", delivery_state="rejected")
+    task = make_task()
 
     with pytest.raises(DeliveryUnknownError, match="无法确认"):
         await plugin._notify_background_task(task, "刚才那次生图没有成功。")

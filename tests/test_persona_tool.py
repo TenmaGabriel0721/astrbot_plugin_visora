@@ -13,6 +13,7 @@ from astrbot_plugin_visora.background_tasks import (
 )
 from astrbot_plugin_visora.llm_tools import (
     PERSONA_ALLOWED_ASPECT_RATIOS,
+    SILENT_IMAGE_TOOL_FAILURE,
     VisoraImageGenerationTool,
     VisoraPersonaPhotoTool,
     build_persona_photo_prompt,
@@ -129,6 +130,29 @@ def make_plugin(*, economy=True, deduct_result=True, persona_resolution="2K"):
 
 def make_context(event):
     return SimpleNamespace(context=SimpleNamespace(event=event))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["config", "references", "admission"])
+async def test_persona_tool_keeps_internal_failures_out_of_the_reply(stage):
+    plugin, _ = make_plugin()
+    diagnostic = "API error (502), private diagnostic sentinel"
+    target = {
+        "config": plugin._load_config,
+        "references": plugin.persona_profiles.load_references,
+        "admission": plugin.background_task_manager.accept,
+    }[stage]
+    target.side_effect = RuntimeError(diagnostic)
+
+    result = await VisoraPersonaPhotoTool(plugin=plugin).call(
+        make_context(make_event()), scene_hint="雨后街头", extra_request="休闲外套"
+    )
+
+    assert result == SILENT_IMAGE_TOOL_FAILURE
+    assert diagnostic not in result
+    plugin.data_manager.deduct_points.assert_not_awaited()
+    if stage == "admission":
+        plugin._release_background_acceptance.assert_called_once()
 
 
 def test_persona_tool_schema_requires_descriptions_and_constrains_parameters():
@@ -375,6 +399,7 @@ async def test_persona_tool_passes_frozen_inputs_to_background_manager():
     assert spec.resolution == "2K"
     assert spec.charge_amount == 7
     assert spec.metadata == {
+        "reply_mode": "combined",
         "ack_key": spec.request_fingerprint,
         "user_prompt": "想看一张雨后街头的生活照",
         "effective_prompt_summary": (

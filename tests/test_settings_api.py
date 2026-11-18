@@ -104,6 +104,46 @@ def make_api(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reply_mode_switch_saves_immediately_and_preserves_newer_settings(
+    tmp_path,
+):
+    api = make_api(tmp_path)
+    initial = api.snapshot()
+    assert initial["combine_image_reply"] is True
+    payload = {**initial, "combine_image_reply": False}
+    with patch(
+        "astrbot_plugin_visora.settings_api.request",
+        SimpleNamespace(json=AsyncMock(return_value=payload)),
+    ):
+        result = await api.save_settings()
+    assert result["status"] == "ok"
+    assert api.plugin._config_get("combine_image_reply") is False
+    assert result["data"]["revision"] != initial["revision"]
+    saved = json.loads(Path(api.plugin.config.config_path).read_text())
+    assert saved["leave_reply"]["combine_image_reply"] is False
+
+    payload = dict(result["data"])
+    payload.pop("combine_image_reply")
+    with patch(
+        "astrbot_plugin_visora.settings_api.request",
+        SimpleNamespace(json=AsyncMock(return_value=payload)),
+    ):
+        result = await api.save_settings()
+    assert result["status"] == "ok"
+    assert api.plugin._config_get("combine_image_reply") is False
+
+    api.plugin._config_set("combine_image_reply", True)
+    with patch(
+        "astrbot_plugin_visora.settings_api.request",
+        SimpleNamespace(json=AsyncMock(return_value=payload)),
+    ):
+        rejected = await api.save_settings()
+    assert rejected["status"] == "error"
+    assert "别处更新" in rejected["message"]
+    assert api.plugin._config_get("combine_image_reply") is True
+
+
+@pytest.mark.asyncio
 async def test_page_presets_can_be_created_edited_and_deleted_without_restart(tmp_path):
     api = make_api(tmp_path)
     preset = {
